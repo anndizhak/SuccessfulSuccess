@@ -1,0 +1,23 @@
+# Lambda image for the backend, built and pushed by `make aws-push`.
+# backend/Dockerfile stays the local/compose image; this one serves the same app
+# through app/lambda_handler.py (Mangum). The platform comes from the build's
+# --platform flag, which the Makefile derives from AWS_LAMBDA_ARCH.
+FROM public.ecr.aws/lambda/python:3.12
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# Into the system site-packages, not LAMBDA_TASK_ROOT: installing there would
+# merge the alembic package into the alembic/ migrations folder.
+COPY pyproject.toml ./
+RUN uv pip install --system --no-cache -r pyproject.toml
+
+COPY alembic.ini ./
+COPY alembic ./alembic
+COPY app ./app
+
+CMD ["app.lambda_handler.handler"]
