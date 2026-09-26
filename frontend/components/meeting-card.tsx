@@ -10,7 +10,11 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { formatTimeRange, initials } from "@/lib/datetime"
 import type { Meeting } from "@/lib/types"
@@ -20,7 +24,13 @@ const MAX_AVATARS = 4
 /** Canva colour-codes its cards; we rotate the same pastel tints by position. */
 const TINTS = ["tint-violet", "tint-teal", "tint-pink", "tint-amber"] as const
 
-export function MeetingCard({ meeting, index = 0 }: { meeting: Meeting; index?: number }) {
+export function MeetingCard({
+  meeting,
+  index = 0,
+}: {
+  meeting: Meeting
+  index?: number
+}) {
   const tint = TINTS[index % TINTS.length]
   const shown = meeting.participants.slice(0, MAX_AVATARS)
   const overflow = meeting.participants.length - shown.length
@@ -36,7 +46,7 @@ export function MeetingCard({ meeting, index = 0 }: { meeting: Meeting; index?: 
           <span
             className={cn(
               tint,
-              "inline-flex items-center rounded-full px-3 py-1 font-mono text-xs font-semibold tabular-nums",
+              "inline-flex items-center rounded-full px-3 py-1 font-mono text-xs font-semibold tabular-nums"
             )}
           >
             {formatTimeRange(meeting.starts_at, meeting.ends_at)}
@@ -48,9 +58,13 @@ export function MeetingCard({ meeting, index = 0 }: { meeting: Meeting; index?: 
             </span>
           ) : null}
         </div>
-        <CardTitle className="text-xl font-bold tracking-tight">{meeting.name}</CardTitle>
+        <CardTitle className="text-xl font-bold tracking-tight">
+          {meeting.name}
+        </CardTitle>
         {meeting.description ? (
-          <CardDescription className="line-clamp-3">{meeting.description}</CardDescription>
+          <CardDescription className="line-clamp-3">
+            {meeting.description}
+          </CardDescription>
         ) : null}
       </CardHeader>
 
@@ -78,11 +92,15 @@ export function MeetingCard({ meeting, index = 0 }: { meeting: Meeting; index?: 
                   ))}
                   {overflow > 0 ? (
                     <Avatar className="ring-background size-8 ring-2">
-                      <AvatarFallback className="text-xs">+{overflow}</AvatarFallback>
+                      <AvatarFallback className="text-xs">
+                        +{overflow}
+                      </AvatarFallback>
                     </Avatar>
                   ) : null}
                 </div>
-                <span className="text-muted-foreground truncate text-sm">{allNames}</span>
+                <span className="text-muted-foreground truncate text-sm">
+                  {allNames}
+                </span>
               </div>
             </TooltipTrigger>
             <TooltipContent className="max-w-xs">

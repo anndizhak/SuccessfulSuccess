@@ -8,7 +8,11 @@ import { MeetingList } from "@/components/meeting-list"
 import { useMeetings } from "@/hooks/use-meetings"
 import { formatLongDate } from "@/lib/datetime"
 
-export function TodayPage({ initialDialogOpen = false }: { initialDialogOpen?: boolean }) {
+export function TodayPage({
+  initialDialogOpen = false,
+}: {
+  initialDialogOpen?: boolean
+}) {
   const [dialogOpen, setDialogOpen] = useState(initialDialogOpen)
   const { data } = useMeetings()
 
@@ -25,7 +29,9 @@ export function TodayPage({ initialDialogOpen = false }: { initialDialogOpen?: b
               Today
             </h1>
             {data ? (
-              <p className="text-muted-foreground mt-2 text-base">{formatLongDate(data.date)}</p>
+              <p className="text-muted-foreground mt-2 text-base">
+                {formatLongDate(data.date)}
+              </p>
             ) : null}
           </div>
           {data ? (

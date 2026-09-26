@@ -6,7 +6,8 @@ import { createMeeting, deleteMeeting, listMeetings } from "@/lib/api"
 import type { MeetingCreateInput } from "@/lib/types"
 
 /** Shared cache key: the list and the header menu read the same entry. */
-export const meetingsKey = (date?: string) => ["meetings", { date: date ?? "today" }] as const
+export const meetingsKey = (date?: string) =>
+  ["meetings", { date: date ?? "today" }] as const
 
 export function useMeetings(date?: string) {
   return useQuery({

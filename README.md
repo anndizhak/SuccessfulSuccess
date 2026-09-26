@@ -278,12 +278,12 @@ docker-compose.yml
 
 ## Continuous integration
 
-`.github/workflows/style.yml` runs on every push to `main` and gates style only:
+`.github/workflows/style.yml` runs on every push, on any branch, and gates style only:
 
 | Job | Runs | Against |
 |-----|------|---------|
 | Backend — ruff | `ruff check` (GitHub annotations) + `ruff format --diff` | `backend/` |
-| Frontend — ESLint | `npm ci` + `npm run lint` | `frontend/` |
+| Frontend — ESLint + Prettier | `npm ci` + `npm run lint` + `npm run format:check` | `frontend/` |
 
 Ruff is pinned to the version the backend image ships (0.16.6) and Node matches
 the container's Node 22, so CI and local containers agree on what passes.
@@ -292,9 +292,14 @@ Reproduce either job locally:
 
 ```bash
 make lint                                   # both, through the running containers
+make fmt                                    # fix formatting on both sides
 cd backend  && uvx ruff@0.16.6 check . && uvx ruff@0.16.6 format --diff .
-cd frontend && npm ci && npm run lint
+cd frontend && npm ci && npm run lint && npm run format:check
 ```
+
+Prettier's settings (`frontend/.prettierrc.json`) match the existing code: no
+semicolons, double quotes, ES5 trailing commas. `eslint-config-prettier` turns
+off the ESLint rules that would disagree with it.
 
 There is no deploy (CD) stage — no target is configured yet.
 

@@ -109,12 +109,15 @@ test: ## Run the backend test suite against a throwaway database
 		$(COMPOSE) exec db createdb -U app meetings_test
 	$(COMPOSE) exec -e DATABASE_URL=postgresql+asyncpg://app:app@db:5432/meetings_test backend pytest -q
 
-lint: ## Lint backend and frontend
+lint: ## Lint and format-check backend and frontend (what CI runs)
 	$(COMPOSE) exec backend ruff check .
+	$(COMPOSE) exec backend ruff format --check .
 	$(COMPOSE) exec frontend npm run lint
+	$(COMPOSE) exec frontend npm run format:check
 
-fmt: ## Format the backend code
+fmt: ## Format the backend and frontend code
 	$(COMPOSE) exec backend ruff format .
+	$(COMPOSE) exec frontend npm run format
 
 shell-backend: ## Open a shell in the backend container
 	$(COMPOSE) exec backend sh

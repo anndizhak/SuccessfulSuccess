@@ -35,7 +35,9 @@ export function MeetingList({ onCreate }: { onCreate: () => void }) {
         <AlertCircle className="size-4" aria-hidden />
         <AlertTitle>Could not load meetings</AlertTitle>
         <AlertDescription className="flex flex-col items-start gap-3">
-          <span>{error instanceof Error ? error.message : "Unknown error."}</span>
+          <span>
+            {error instanceof Error ? error.message : "Unknown error."}
+          </span>
           <Button size="sm" variant="outline" onClick={() => refetch()}>
             Retry
           </Button>

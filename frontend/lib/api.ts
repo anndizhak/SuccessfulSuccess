@@ -14,7 +14,12 @@ export class ApiError extends Error {
   readonly details: ApiErrorDetail[]
   readonly status: number
 
-  constructor(status: number, code: string, message: string, details: ApiErrorDetail[]) {
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    details: ApiErrorDetail[]
+  ) {
     super(message)
     this.name = "ApiError"
     this.status = status
@@ -32,7 +37,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       cache: "no-store",
     })
   } catch {
-    throw new ApiError(0, "network_error", "Could not reach the meetings API.", [])
+    throw new ApiError(
+      0,
+      "network_error",
+      "Could not reach the meetings API.",
+      []
+    )
   }
 
   if (response.status === 204) {
@@ -48,7 +58,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       response.status,
       body?.error?.code ?? "internal_error",
       body?.error?.message ?? `Request failed with status ${response.status}.`,
-      body?.error?.details ?? [],
+      body?.error?.details ?? []
     )
   }
 

@@ -19,7 +19,8 @@ export function ParticipantsInput({ value, onChange, errors }: Props) {
   }
 
   const addRow = () => onChange([...value, { name: "", email: "" }])
-  const removeRow = (index: number) => onChange(value.filter((_, i) => i !== index))
+  const removeRow = (index: number) =>
+    onChange(value.filter((_, i) => i !== index))
 
   return (
     <div className="space-y-2">
@@ -32,7 +33,9 @@ export function ParticipantsInput({ value, onChange, errors }: Props) {
                 aria-label={`Participant ${index + 1} name`}
                 placeholder="Name"
                 value={participant.name}
-                onChange={(event) => update(index, { name: event.target.value })}
+                onChange={(event) =>
+                  update(index, { name: event.target.value })
+                }
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
                     event.preventDefault()
@@ -45,7 +48,9 @@ export function ParticipantsInput({ value, onChange, errors }: Props) {
                 placeholder="Email (optional)"
                 type="email"
                 value={participant.email ?? ""}
-                onChange={(event) => update(index, { email: event.target.value })}
+                onChange={(event) =>
+                  update(index, { email: event.target.value })
+                }
               />
               <Button
                 type="button"

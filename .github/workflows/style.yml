@@ -1,10 +1,9 @@
 name: Style
 
-# Only on main, as requested. Add `pull_request: branches: [main]` here if you
+# Every push, on any branch. Add `pull_request: branches: [main]` here if you
 # later want the same gates to run before a merge.
 on:
   push:
-    branches: [main]
 
 permissions:
   contents: read
@@ -39,7 +38,7 @@ jobs:
         run: uvx ruff@0.16.6 format --diff .
 
   frontend:
-    name: Frontend — ESLint
+    name: Frontend — ESLint + Prettier
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -60,3 +59,6 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      - name: Format
+        run: npm run format:check
