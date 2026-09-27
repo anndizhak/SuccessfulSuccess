@@ -1,0 +1,101 @@
+name: Deploy backend
+
+# Every push to main is checked and, if green, deployed. Other branches only get
+# the style checks in style.yml.
+on:
+  push:
+    branches: [main]
+
+# Deploys queue up instead of cancelling each other: stopping one halfway
+# through a CloudFormation update would leave the stack mid-rollout.
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Lint and test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    # The tests run against a real Postgres, as they do locally.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: meetings_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U app -d meetings_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: backend/pyproject.toml
+
+      # Same pinned version as style.yml and the backend image.
+      - name: Lint
+        run: |
+          uvx ruff@0.16.6 check --output-format=github .
+          uvx ruff@0.16.6 format --diff .
+
+      - name: Test
+        env:
+          DATABASE_URL: postgresql+asyncpg://app:app@localhost:5432/meetings_test
+        run: |
+          uv sync
+          uv run pytest -q
+
+  deploy:
+    name: Deploy to AWS
+    needs: checks
+    # The Lambda function runs on arm64, so build the image natively on an arm64
+    # runner instead of emulating it.
+    runs-on: ubuntu-24.04-arm
+    # No `environment:` here: it would change the OIDC token's subject, and the
+    # role's trust policy only accepts repo:<owner>/<name>:ref:refs/heads/main.
+    permissions:
+      contents: read
+      id-token: write   # lets the job request GitHub's OIDC token
+    env:
+      AWS_REGION: us-east-1
+      PROJECT_NAME: successfulsuccess
+    steps:
+      - uses: actions/checkout@v5
+
+      # Exchanges the OIDC token for temporary credentials that expire with the
+      # job. The role ARN is not a secret; no access key is stored anywhere.
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::347282156909:role/successfulsuccess-github-deploy
+          aws-region: us-east-1
+
+      - name: Install the AWS CLI if the runner lacks it
+        run: |
+          if ! command -v aws >/dev/null; then
+            curl -sSfL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o /tmp/awscliv2.zip
+            unzip -q /tmp/awscliv2.zip -d /tmp
+            sudo /tmp/aws/install
+          fi
+          aws --version
+
+      # The same target you run locally. The image is tagged with the commit
+      # SHA, so the running version is always traceable and a rollback is
+      # `make aws-release IMAGE_TAG=<previous sha>`.
+      - name: Deploy
+        run: make deploy-backend AWS=aws AWS_LAMBDA_ARCH=arm64 IMAGE_TAG=${{ github.sha }}

@@ -69,6 +69,16 @@ Every stack is tagged `PROJECT_NAME=<value of PROJECT_NAME>`, and every resource
 that accepts tags also carries it explicitly in the templates. Filter by it in
 Cost Explorer or Resource Groups to see everything the project owns.
 
+### The deploy contract
+
+Deploys are plain `make` targets, and CI runs the same ones, so a failed deploy
+can be reproduced and debugged locally instead of by pushing commits:
+
+| Target | What it does |
+|--------|--------------|
+| `make deploy-backend` | Build the image, push it to ECR, update the backend stack, run migrations (alias of `aws-deploy-backend`) |
+| `make deploy-frontend` | Build the static bundle, sync it to S3, invalidate CloudFront (alias of `aws-deploy-frontend`) |
+
 ### One command
 
 ```bash
@@ -96,7 +106,7 @@ AWS_FRONTEND_DOMAIN=         # optional, e.g. app.example.com
 ### 1. Backend — Lambda function URL, Aurora Serverless v2
 
 ```bash
-make aws-deploy-backend   # ECR + build & push + create/update the stack + migrate, prints the URL
+make deploy-backend       # ECR + build & push + create/update the stack + migrate, prints the URL
 ```
 
 The API runs as a **Lambda function** from a container image
@@ -135,6 +145,7 @@ still busy with an earlier update, the target waits for it rather than failing.
 | `make aws-status` | Stack outputs plus the API function's state |
 | `make aws-logs` | Follow the function logs from CloudWatch |
 | `make aws-migrate` | Apply migrations again on their own |
+| `make aws-release IMAGE_TAG=<sha>` | Point the API at an image already in ECR (rollback) |
 | `make aws-destroy` | Delete every stack (asks first — the database goes too) |
 
 The image is built for `AWS_LAMBDA_ARCH` (`x86_64` by default).
@@ -146,7 +157,7 @@ the multi-manifest image index that BuildKit otherwise pushes.
 ### 2. Frontend — S3 + CloudFront
 
 ```bash
-make aws-deploy-frontend   # create/update the stack, build against the API URL, upload
+make deploy-frontend       # create/update the stack, build against the API URL, upload
 make aws-frontend-url      # print the site URL
 ```
 
@@ -203,7 +214,31 @@ to the distribution's `*.cloudfront.net` name.
 
 The API keeps its function URL: a function URL cannot take a custom domain.
 
-### Cost
+### 4. GitHub Actions access (OIDC, no stored keys)
+
+```bash
+make aws-github-oidc   # once, with your own admin credentials
+```
+
+`infra/github-oidc.yml` registers GitHub's OIDC provider
+(`token.actions.githubusercontent.com`) and a role,
+`<PROJECT_NAME>-github-deploy`, that CI assumes with
+`aws-actions/configure-aws-credentials`. GitHub signs a short-lived token for
+each workflow run; AWS exchanges it for credentials that expire with the job, so
+no access key is stored in GitHub.
+
+The trust policy accepts a token only when its `sub` claim is exactly
+`repo:<GITHUB_REPO>:ref:refs/heads/main` (`StringEquals`, no wildcards):
+other repositories, other branches, tags and pull requests are all refused.
+`GITHUB_REPO` is read from the `origin` remote. A job that sets `environment:`
+gets a different `sub` and is refused too.
+
+The role can only roll out a new backend image: `cloudformation deploy` on the
+ECR and backend stacks (never its own), push to the backend's ECR repository,
+update and invoke the backend function, and pass that function's own execution
+role to Lambda. It cannot create databases, networks or IAM resources, so
+infrastructure changes stay a local, admin-run deploy.
+
 
 - **Lambda** — 1M requests and 400,000 GB-seconds a month, always free. The
   function URL costs nothing beyond the invocation.
@@ -301,7 +336,29 @@ Prettier's settings (`frontend/.prettierrc.json`) match the existing code: no
 semicolons, double quotes, ES5 trailing commas. `eslint-config-prettier` turns
 off the ESLint rules that would disagree with it.
 
-There is no deploy (CD) stage — no target is configured yet.
+### Backend deploys (CD)
+
+`.github/workflows/deploy-backend.yml` runs on every push to `main`:
+
+1. **Lint and test** — ruff, then pytest against a Postgres service container.
+2. **Deploy** (only if 1 passed) — assumes the `github-deploy` role over OIDC
+   (see *GitHub Actions access* above) and runs
+   `make deploy-backend IMAGE_TAG=<commit sha>` on an arm64 runner: the same
+   target you run locally, which builds the image, pushes it to ECR tagged with
+   the commit SHA, updates the stack and runs the migrations.
+
+Images are tagged with the full commit SHA, never `latest`, so the running
+version is always known. Rolling back is releasing an older tag, without
+rebuilding:
+
+```bash
+make aws-release AWS=aws AWS_LAMBDA_ARCH=arm64 IMAGE_TAG=<previous commit sha>
+```
+
+ECR keeps the five most recent images, so that is the rollback window. Updates
+never need the database password: parameters that are not given (password,
+timezone, seed flag) keep the value the stack already has. CI only rolls out
+code — changes to `infra/*.yml` are deployed locally with admin credentials.
 
 ## Development notes
 

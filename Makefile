@@ -20,6 +20,9 @@ AWS ?= docker run --rm \
 APP_STACK ?= $(PROJECT_NAME)-backend
 ECR_STACK ?= $(PROJECT_NAME)-ecr
 FRONTEND_STACK ?= $(PROJECT_NAME)-frontend
+GITHUB_STACK ?= $(PROJECT_NAME)-github
+# owner/name of the only repository whose main branch may deploy; read from origin.
+GITHUB_REPO ?= $(shell git remote get-url origin 2>/dev/null | sed -E 's|\.git$$||; s|.*github\.com[:/]||')
 IMAGE_TAG ?= latest
 # x86_64 or arm64. arm64 is ~20% cheaper on Lambda and builds natively on
 # Apple Silicon; the image platform is derived from it so the two cannot drift.
@@ -63,15 +66,19 @@ define require-aws-credentials
 		exit 1; }
 endef
 
+# The password only has to be given when the backend stack is first created;
+# updates (and CI, which never sees it) keep the value the stack already has.
 define require-db-password
-	@test -n "$(AWS_DB_PASSWORD)" || { \
-		echo "AWS_DB_PASSWORD is empty — set it in .env (8+ chars, [A-Za-z0-9_-] only)"; \
+	@test -n "$(AWS_DB_PASSWORD)" || $(AWS) cloudformation describe-stacks --stack-name $(APP_STACK) \
+		>/dev/null 2>&1 || { \
+		echo "AWS_DB_PASSWORD is empty — set it in .env for the first deploy (8+ chars, [A-Za-z0-9_-] only)"; \
 		exit 1; }
 endef
 
 .PHONY: help up up-build down down-v logs ps migrate revision seed test lint fmt shell-backend psql \
-        aws-whoami aws-deploy aws-ecr aws-push aws-deploy-backend aws-migrate aws-url aws-status aws-logs \
-        aws-frontend-cert aws-deploy-frontend aws-frontend-url aws-destroy
+        aws-whoami aws-deploy aws-ecr aws-push aws-deploy-backend aws-release aws-migrate aws-url aws-status aws-logs \
+        aws-frontend-cert aws-deploy-frontend aws-frontend-url aws-destroy \
+        deploy-backend deploy-frontend aws-github-oidc
 
 help:
 	@grep -hE '^[a-z-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -129,6 +136,12 @@ aws-whoami: ## Verify the AWS credentials in .env
 	$(require-aws-credentials)
 	$(AWS) sts get-caller-identity
 
+# The deploy contract: CI runs these same two targets, so a failed deploy can be
+# reproduced on your own machine.
+deploy-backend: aws-deploy-backend ## Build the image, push it to ECR, update the backend stack, migrate
+
+deploy-frontend: aws-deploy-frontend ## Build the static bundle, sync it to S3, invalidate CloudFront
+
 aws-deploy: ## Deploy everything: the backend first, then the frontend built against its URL
 	@$(MAKE) --no-print-directory aws-deploy-backend
 	@$(MAKE) --no-print-directory aws-deploy-frontend
@@ -152,6 +165,10 @@ aws-push: aws-ecr ## Build the backend Lambda image and push it to ECR
 		docker push "$$repo:$(IMAGE_TAG)"
 
 aws-deploy-backend: aws-push ## Deploy the backend to AWS (Lambda function URL + Aurora Serverless), then migrate
+	@$(MAKE) --no-print-directory aws-release
+
+# Rolling back is releasing an older tag: make aws-release IMAGE_TAG=<commit sha>
+aws-release: ## Point the backend at an image already in ECR (IMAGE_TAG), then migrate
 	$(require-aws-credentials)
 	$(require-db-password)
 	@vpc=$$($(AWS) ec2 describe-vpcs --filters Name=isDefault,Values=true \
@@ -165,6 +182,7 @@ aws-deploy-backend: aws-push ## Deploy the backend to AWS (Lambda function URL +
 		digest=$$($(AWS) ecr describe-images --repository-name "$${repo#*/}" \
 			--image-ids imageTag=$(IMAGE_TAG) --query 'imageDetails[0].imageDigest' \
 			--output text | tr -d '[:space:]'); \
+		test -n "$$digest" || { echo "No image tagged $(IMAGE_TAG) in $$repo"; exit 1; }; \
 		cors="$(AWS_CORS_ORIGINS)"; \
 		if [ -z "$$cors" ]; then \
 			cors=$$($(call stack-output,$(FRONTEND_STACK),AllowedOrigins) 2>/dev/null | tr -d '[:space:]'); \
@@ -186,10 +204,10 @@ aws-deploy-backend: aws-push ## Deploy the backend to AWS (Lambda function URL +
 				"SubnetIds=$$subnets" \
 				ImageUri="$$repo@$$digest" \
 				"Architecture=$(AWS_LAMBDA_ARCH)" \
-				"DbPassword=$(AWS_DB_PASSWORD)" \
-				"AppTimezone=$(APP_TIMEZONE)" \
 				"CorsOrigins=$$cors" \
-				"SeedDemoData=$(or $(AWS_SEED_DEMO_DATA),false)"
+				$(if $(AWS_DB_PASSWORD),"DbPassword=$(AWS_DB_PASSWORD)") \
+				$(if $(APP_TIMEZONE),"AppTimezone=$(APP_TIMEZONE)") \
+				$(if $(AWS_SEED_DEMO_DATA),"SeedDemoData=$(AWS_SEED_DEMO_DATA)")
 	@$(MAKE) --no-print-directory aws-migrate
 	@$(MAKE) --no-print-directory aws-url
 
@@ -274,19 +292,44 @@ aws-deploy-frontend: ## Deploy the frontend to S3 + CloudFront, built against th
 		echo "Point $(AWS_FRONTEND_DOMAIN) at the distribution: CNAME $$($(call stack-output,$(FRONTEND_STACK),DistributionDomain) | tr -d '[:space:]')"; \
 	fi
 
+aws-github-oidc: ## Create the GitHub OIDC provider and the role CI deploys with (run once, as admin)
+	$(require-aws-credentials)
+	@test -n "$(GITHUB_REPO)" || { echo "GITHUB_REPO is empty — pass GITHUB_REPO=owner/name"; exit 1; }
+	@provider=$$($(AWS) iam list-open-id-connect-providers \
+			--query 'OpenIDConnectProviderList[?ends_with(Arn, `/token.actions.githubusercontent.com`)].Arn' \
+			--output text | tr -d '[:space:]'); \
+		create=true; \
+		if [ -n "$$provider" ] && ! $(AWS) cloudformation describe-stack-resource --stack-name $(GITHUB_STACK) \
+				--logical-resource-id GitHubOidcProvider >/dev/null 2>&1; then \
+			echo "Reusing the account's existing GitHub OIDC provider"; create=false; fi; \
+		echo "Trusting $(GITHUB_REPO), branch main"; \
+		$(AWS) cloudformation deploy \
+			--stack-name $(GITHUB_STACK) \
+			--template-file infra/github-oidc.yml \
+			--capabilities CAPABILITY_NAMED_IAM \
+			--no-fail-on-empty-changeset \
+			$(STACK_TAGS) \
+			--parameter-overrides \
+				"ProjectName=$(PROJECT_NAME)" \
+				"GitHubRepo=$(GITHUB_REPO)" \
+				"CreateOidcProvider=$$create"
+	@$(call stack-output,$(GITHUB_STACK),RoleArn)
+
 aws-frontend-url: ## Print the deployed site URL
 	@$(call stack-output,$(FRONTEND_STACK),SiteUrl)
 
 aws-destroy: ## Delete every stack, including the database and its data
 	$(require-aws-credentials)
-	@printf 'Delete %s, %s and %s? The Aurora cluster and all its data go with them (no snapshot). Type yes: ' \
-		"$(FRONTEND_STACK)" "$(APP_STACK)" "$(ECR_STACK)"; \
+	@printf 'Delete %s, %s, %s and %s? The Aurora cluster and all its data go with them (no snapshot). Type yes: ' \
+		"$(GITHUB_STACK)" "$(FRONTEND_STACK)" "$(APP_STACK)" "$(ECR_STACK)"; \
 		read answer; test "$$answer" = "yes" || { echo "Aborted."; exit 1; }
 	@bucket=$$($(call stack-output,$(FRONTEND_STACK),BucketName) 2>/dev/null | tr -d '[:space:]'); \
 		if [ -n "$$bucket" ] && [ "$$bucket" != "None" ]; then \
 			echo "Emptying s3://$$bucket"; \
 			$(AWS) s3 rm "s3://$$bucket" --recursive --only-show-errors || true; \
 		fi
+	-$(AWS) cloudformation delete-stack --stack-name $(GITHUB_STACK)
+	-$(AWS) cloudformation wait stack-delete-complete --stack-name $(GITHUB_STACK)
 	-$(AWS) cloudformation delete-stack --stack-name $(FRONTEND_STACK)
 	-$(AWS) cloudformation wait stack-delete-complete --stack-name $(FRONTEND_STACK)
 	@echo "Deleting $(APP_STACK) — Lambda releases its VPC network interfaces slowly, allow ~20 minutes."
