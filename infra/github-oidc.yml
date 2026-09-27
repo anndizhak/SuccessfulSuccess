@@ -178,6 +178,22 @@ Resources:
                   - iam:ListRolePolicies
                   - iam:ListAttachedRolePolicies
                 Resource: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ProjectName}-backend-FunctionRole-*"
+              # The function's DATABASE_URL is built from the cluster's endpoint,
+              # which CloudFormation looks up on every function update.
+              - Sid: ReadDatabaseEndpoint
+                Effect: Allow
+                Action: rds:DescribeDBClusters
+                Resource: !Sub "arn:${AWS::Partition}:rds:${AWS::Region}:${AWS::AccountId}:cluster:${ProjectName}-db"
+              # Before a deploy, CloudFormation checks what the caller may do by
+              # reading the caller's own policies. Read-only, on this role only.
+              - Sid: ReadOwnPolicies
+                Effect: Allow
+                Action:
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:GetRolePolicy
+                  - iam:ListPoliciesGrantingServiceAccess
+                Resource: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ProjectName}-github-deploy"
               # A configuration update re-sends the function's execution role.
               # Only that role, and only to Lambda.
               - Sid: PassFunctionRole
