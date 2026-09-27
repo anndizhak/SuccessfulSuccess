@@ -15,6 +15,16 @@ Parameters:
     Description: owner/name of the only repository allowed to assume the role (case-sensitive).
     AllowedPattern: "[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
 
+  GitHubOwnerId:
+    Type: String
+    AllowedPattern: "[0-9]+"
+    Description: Numeric id of the repository's owner (api.github.com/repos/<owner>/<name> → owner.id).
+
+  GitHubRepoId:
+    Type: String
+    AllowedPattern: "[0-9]+"
+    Description: Numeric id of the repository (api.github.com/repos/<owner>/<name> → id).
+
   GitHubBranch:
     Type: String
     Default: main
@@ -66,9 +76,15 @@ Resources:
                 # The token was issued for AWS...
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
                 # ...by a workflow run on exactly this repository and branch.
-                # StringEquals, not StringLike: no wildcards, so no other repo,
-                # branch, tag or pull request matches.
-                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubRepo}:ref:refs/heads/${GitHubBranch}"
+                # GitHub's subject names the owner and repository together with
+                # their numeric ids, so a repository deleted and re-created
+                # under the same name does not match either. StringEquals, not
+                # StringLike: no wildcards, so no other repo, branch, tag or
+                # pull request matches.
+                token.actions.githubusercontent.com:sub: !Sub
+                  - "repo:${Owner}@${GitHubOwnerId}/${Name}@${GitHubRepoId}:ref:refs/heads/${GitHubBranch}"
+                  - Owner: !Select [0, !Split ["/", !Ref GitHubRepo]]
+                    Name: !Select [1, !Split ["/", !Ref GitHubRepo]]
       Policies:
         - PolicyName: deploy-backend
           PolicyDocument:

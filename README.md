@@ -228,10 +228,14 @@ each workflow run; AWS exchanges it for credentials that expire with the job, so
 no access key is stored in GitHub.
 
 The trust policy accepts a token only when its `sub` claim is exactly
-`repo:<GITHUB_REPO>:ref:refs/heads/main` (`StringEquals`, no wildcards):
-other repositories, other branches, tags and pull requests are all refused.
-`GITHUB_REPO` is read from the `origin` remote. A job that sets `environment:`
-gets a different `sub` and is refused too.
+`repo:<owner>@<owner id>/<name>@<repo id>:ref:refs/heads/main` (`StringEquals`,
+no wildcards): other repositories, other branches, tags and pull requests are
+all refused, and so is a repository deleted and re-created under the same name,
+since its id changes. `GITHUB_REPO` is read from the `origin` remote and the two
+ids from GitHub's public API. A job that sets `environment:` gets a different
+`sub` and is refused too. If a run fails with *Not authorized to perform
+sts:AssumeRoleWithWebIdentity*, CloudTrail's refused `AssumeRoleWithWebIdentity`
+event shows the `sub` GitHub actually sent.
 
 The role can only roll out a new backend image: `cloudformation deploy` on the
 ECR and backend stacks (never its own), push to the backend's ECR repository,

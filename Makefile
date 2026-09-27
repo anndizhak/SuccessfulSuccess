@@ -23,6 +23,10 @@ FRONTEND_STACK ?= $(PROJECT_NAME)-frontend
 GITHUB_STACK ?= $(PROJECT_NAME)-github
 # owner/name of the only repository whose main branch may deploy; read from origin.
 GITHUB_REPO ?= $(shell git remote get-url origin 2>/dev/null | sed -E 's|\.git$$||; s|.*github\.com[:/]||')
+# GitHub's OIDC subject carries the owner's and repository's numeric ids too.
+# Looked up from the public API; pass them yourself for a private repository.
+GITHUB_OWNER_ID ?= $(shell curl -sf https://api.github.com/repos/$(GITHUB_REPO) 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin)["owner"]["id"])' 2>/dev/null)
+GITHUB_REPO_ID ?= $(shell curl -sf https://api.github.com/repos/$(GITHUB_REPO) 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])' 2>/dev/null)
 IMAGE_TAG ?= latest
 # x86_64 or arm64. arm64 is ~20% cheaper on Lambda and builds natively on
 # Apple Silicon; the image platform is derived from it so the two cannot drift.
@@ -295,6 +299,8 @@ aws-deploy-frontend: ## Deploy the frontend to S3 + CloudFront, built against th
 aws-github-oidc: ## Create the GitHub OIDC provider and the role CI deploys with (run once, as admin)
 	$(require-aws-credentials)
 	@test -n "$(GITHUB_REPO)" || { echo "GITHUB_REPO is empty — pass GITHUB_REPO=owner/name"; exit 1; }
+	@test -n "$(GITHUB_OWNER_ID)" -a -n "$(GITHUB_REPO_ID)" || { \
+		echo "Could not look up $(GITHUB_REPO) on GitHub — pass GITHUB_OWNER_ID=... GITHUB_REPO_ID=..."; exit 1; }
 	@provider=$$($(AWS) iam list-open-id-connect-providers \
 			--query 'OpenIDConnectProviderList[?ends_with(Arn, `/token.actions.githubusercontent.com`)].Arn' \
 			--output text | tr -d '[:space:]'); \
@@ -302,7 +308,7 @@ aws-github-oidc: ## Create the GitHub OIDC provider and the role CI deploys with
 		if [ -n "$$provider" ] && ! $(AWS) cloudformation describe-stack-resource --stack-name $(GITHUB_STACK) \
 				--logical-resource-id GitHubOidcProvider >/dev/null 2>&1; then \
 			echo "Reusing the account's existing GitHub OIDC provider"; create=false; fi; \
-		echo "Trusting $(GITHUB_REPO), branch main"; \
+		echo "Trusting $(GITHUB_REPO) (owner id $(GITHUB_OWNER_ID), repo id $(GITHUB_REPO_ID)), branch main"; \
 		$(AWS) cloudformation deploy \
 			--stack-name $(GITHUB_STACK) \
 			--template-file infra/github-oidc.yml \
@@ -312,6 +318,8 @@ aws-github-oidc: ## Create the GitHub OIDC provider and the role CI deploys with
 			--parameter-overrides \
 				"ProjectName=$(PROJECT_NAME)" \
 				"GitHubRepo=$(GITHUB_REPO)" \
+				"GitHubOwnerId=$(GITHUB_OWNER_ID)" \
+				"GitHubRepoId=$(GITHUB_REPO_ID)" \
 				"CreateOidcProvider=$$create"
 	@$(call stack-output,$(GITHUB_STACK),RoleArn)
 
