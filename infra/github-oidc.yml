@@ -146,6 +146,7 @@ Resources:
                   - ec2:DescribeVpcs
                   - ec2:DescribeSubnets
                   - ec2:DescribeSecurityGroups
+                  - ec2:DescribeNetworkAcls
                 Resource: "*"
               # Point the function at the new image, update its environment,
               # and invoke it to run the migrations.
@@ -167,6 +168,16 @@ Resources:
                   - lambda:UpdateFunctionConfiguration
                   - lambda:InvokeFunction
                 Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${ProjectName}-backend"
+              # CloudFormation reads the execution role to resolve its ARN for
+              # the function, and inspects its policies before the update.
+              # Read-only, and only that role.
+              - Sid: ReadFunctionRole
+                Effect: Allow
+                Action:
+                  - iam:GetRole
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                Resource: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ProjectName}-backend-FunctionRole-*"
               # A configuration update re-sends the function's execution role.
               # Only that role, and only to Lambda.
               - Sid: PassFunctionRole
