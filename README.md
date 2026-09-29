@@ -65,6 +65,18 @@ where CloudFront reads its certificates from. There is no API Gateway or load
 balancer: the browser calls the API on its function URL, and FastAPI's CORS
 settings allow it.
 
+> **Lab note — deviations from the assignment, confirmed by the teacher:**
+> - **Step 5:** the backend runs on **AWS Lambda behind its function URL**, not
+>   on ECS Fargate behind an Application Load Balancer. The function URL gives
+>   the stable HTTPS address and Lambda starts as many instances as traffic
+>   needs, which covers what the ALB and the ECS service do in the assignment.
+>   The CI pipeline (Step 7) therefore updates the Lambda function to the new
+>   image tag instead of rolling an ECS service.
+> - **Step 6 (custom domain):** not required. The site is served on its
+>   `*.cloudfront.net` address and the API on its function URL, both over HTTPS.
+>   The optional custom-domain support for the frontend (section 3 below) is
+>   left in place but is not used in this deployment.
+
 Every stack is tagged `PROJECT_NAME=<value of PROJECT_NAME>`, and every resource
 that accepts tags also carries it explicitly in the templates. Filter by it in
 Cost Explorer or Resource Groups to see everything the project owns.
@@ -192,7 +204,10 @@ distribution takes ~5 minutes to come up.
   `make aws-deploy` the frontend does not exist yet, so the API starts with `*`;
   the frontend step says so, and the next `make aws-deploy-backend` locks it down.
 
-### 3. Custom domain for the frontend (optional)
+### 3. Custom domain for the frontend (optional, not used)
+
+Not part of this deployment — the lab does not require a custom domain (see the
+lab note above). Kept for reference:
 
 ```bash
 # .env
@@ -262,7 +277,8 @@ tier — check your billing console rather than assuming.
 ### Known trade-offs
 
 - **No custom domain on the API**: function URLs cannot take one. Putting one on
-  it would need API Gateway or a second CloudFront distribution in front.
+  it would need API Gateway or a second CloudFront distribution in front. Not
+  needed for the lab (see the lab note above).
 - The database password reaches the function as a plain environment variable.
   Moving it to SSM Parameter Store or Secrets Manager is the first thing to
   harden.
