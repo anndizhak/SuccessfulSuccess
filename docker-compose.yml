@@ -57,7 +57,7 @@ services:
       - /app/.next
     depends_on:
       backend:
-        condition: service_started
+        condition: service_healthy
 
 volumes:
   pgdata:
