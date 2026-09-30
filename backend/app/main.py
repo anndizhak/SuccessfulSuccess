@@ -1,7 +1,6 @@
 """FastAPI application factory."""
 
 import logging
-import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, status
