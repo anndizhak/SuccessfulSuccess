@@ -1,0 +1,274 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Sign-in for the meetings site: a Cognito user pool with email + password
+  self sign-up and Google federation, a public OAuth client for the static
+  frontend, and Cognito's managed login (version 2) on a prefix domain.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: successfulsuccess
+
+  DomainPrefix:
+    Type: String
+    AllowedPattern: "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    Description: >-
+      Managed login lives at https://<prefix>.auth.<region>.amazoncognito.com.
+      Unique per region across all accounts; may not contain "aws", "amazon"
+      or "cognito". Google's OAuth client must list this exact domain.
+
+  CallbackUrls:
+    Type: CommaDelimitedList
+    Description: >-
+      Where Cognito may send the browser back with a code. Must match the
+      frontend's redirect_uri exactly, trailing slash included.
+
+  LogoutUrls:
+    Type: CommaDelimitedList
+    Description: Where Cognito may send the browser after signing out.
+
+  GoogleClientId:
+    Type: String
+    Description: OAuth client ID of the Google Cloud "Web application" client.
+
+  GoogleClientSecret:
+    Type: String
+    NoEcho: true
+    Description: >-
+      OAuth client secret of the Google client. NoEcho keeps it out of the
+      console, the CLI output and the stack's parameters listing.
+
+Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "${ProjectName}-users"
+      # Managed login needs Essentials; the first 10,000 monthly users are free.
+      UserPoolTier: ESSENTIALS
+      # People sign in with their email; there is no separate username.
+      UsernameAttributes: [email]
+      # Cognito emails a confirmation code to new password users.
+      AutoVerifiedAttributes: [email]
+      UsernameConfiguration:
+        CaseSensitive: false
+      # Self sign-up is on: anyone can create an account.
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: false
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+          TemporaryPasswordValidityDays: 7
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      # Cognito's built-in sender: 50 emails a day per account, enough for a lab.
+      EmailConfiguration:
+        EmailSendingAccount: COGNITO_DEFAULT
+      UserPoolTags:
+        PROJECT_NAME: !Ref ProjectName
+
+  GoogleIdentityProvider:
+    Type: AWS::Cognito::UserPoolIdentityProvider
+    Properties:
+      UserPoolId: !Ref UserPool
+      ProviderName: Google
+      ProviderType: Google
+      ProviderDetails:
+        client_id: !Ref GoogleClientId
+        client_secret: !Ref GoogleClientSecret
+        authorize_scopes: openid email profile
+      # Without the mapping a Google user arrives with no email, and the
+      # site's header has nothing to show.
+      AttributeMapping:
+        email: email
+        email_verified: email_verified
+        name: name
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    # The client names Google as a provider, which must exist first.
+    DependsOn: GoogleIdentityProvider
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub "${ProjectName}-web"
+      # A public client: a browser cannot keep a secret, so it gets none and
+      # the code exchange is protected by PKCE instead.
+      GenerateSecret: false
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes: [openid, email, profile]
+      SupportedIdentityProviders: [COGNITO, Google]
+      CallbackURLs: !Ref CallbackUrls
+      LogoutURLs: !Ref LogoutUrls
+      ExplicitAuthFlows:
+        - ALLOW_REFRESH_TOKEN_AUTH
+      # Sign-in errors do not reveal whether an email has an account.
+      PreventUserExistenceErrors: ENABLED
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      UserPoolId: !Ref UserPool
+      Domain: !Ref DomainPrefix
+      ManagedLoginVersion: 2
+
+  # A version 2 domain has no sign-in page until the client has a branding.
+  # This one matches the site's Canva look: a white card with violet buttons
+  # and links on a vivid teal → blue → violet → pink page with confetti, the
+  # gradient calendar logo on the card and the wordmark in a see-through header.
+  # Colours are RRGGBBAA; settings not listed keep Cognito's defaults. The two
+  # images are infra/branding/*.svg, base64-encoded.
+  ManagedLoginBranding:
+    Type: AWS::Cognito::ManagedLoginBranding
+    DependsOn: UserPoolDomain
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientId: !Ref UserPoolClient
+      Settings:
+        categories:
+          global:
+            colorSchemeMode: LIGHT
+            pageHeader:
+              enabled: true
+        components:
+          pageBackground:
+            image:
+              enabled: true
+            lightMode:
+              # Shown until the background image loads.
+              color: 6a4dffff
+          pageHeader:
+            logo:
+              enabled: true
+              location: START
+            backgroundImage:
+              enabled: false
+            lightMode:
+              # Fully transparent, so the gradient runs under the header.
+              background:
+                color: ffffff00
+              borderColor: ffffff00
+          pageText:
+            lightMode:
+              headingColor: 0f1015ff
+              bodyColor: 5b5d66ff
+              descriptionColor: 5b5d66ff
+          form:
+            borderRadius: 24
+            logo:
+              enabled: true
+              location: CENTER
+              position: TOP
+              formInclusion: IN
+            lightMode:
+              backgroundColor: ffffffff
+              borderColor: ffffffff
+          primaryButton:
+            lightMode:
+              defaults:
+                backgroundColor: 8b3dffff
+                textColor: ffffffff
+              hover:
+                backgroundColor: 7d2ae8ff
+                textColor: ffffffff
+              active:
+                backgroundColor: 7d2ae8ff
+                textColor: ffffffff
+              disabled:
+                backgroundColor: e7dbffff
+                borderColor: e7dbffff
+          secondaryButton:
+            lightMode:
+              defaults:
+                backgroundColor: ffffffff
+                borderColor: e7dbffff
+                textColor: 7d2ae8ff
+              hover:
+                backgroundColor: f5efffff
+                borderColor: 8b3dffff
+                textColor: 7d2ae8ff
+              active:
+                backgroundColor: ece0ffff
+                borderColor: 7d2ae8ff
+                textColor: 7d2ae8ff
+          idpButton:
+            standard:
+              lightMode:
+                defaults:
+                  backgroundColor: ffffffff
+                  borderColor: e3e6eeff
+                  textColor: 0f1015ff
+                hover:
+                  backgroundColor: f5efffff
+                  borderColor: 8b3dffff
+                  textColor: 7d2ae8ff
+                active:
+                  backgroundColor: ece0ffff
+                  borderColor: 7d2ae8ff
+                  textColor: 7d2ae8ff
+          alert:
+            borderRadius: 16
+        componentClasses:
+          buttons:
+            borderRadius: 24
+          input:
+            borderRadius: 24
+            lightMode:
+              defaults:
+                backgroundColor: ffffffff
+                borderColor: e3e6eeff
+              placeholderColor: 8a8c94ff
+          inputLabel:
+            lightMode:
+              textColor: 0f1015ff
+          focusState:
+            lightMode:
+              borderColor: 8b3dffff
+          link:
+            lightMode:
+              defaults:
+                textColor: 7d2ae8ff
+              hover:
+                textColor: 8b3dffff
+          optionControls:
+            lightMode:
+              selected:
+                backgroundColor: 8b3dffff
+                foregroundColor: ffffffff
+          divider:
+            lightMode:
+              borderColor: e7dbffff
+      Assets:
+        - Category: FORM_LOGO
+          ColorMode: LIGHT
+          Extension: SVG
+          Bytes: PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI5NiIgaGVpZ2h0PSI5NiIgdmlld0JveD0iMCAwIDk2IDk2Ij4KICA8ZGVmcz4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0iZyIgeDE9IjAiIHkxPSIwIiB4Mj0iMSIgeTI9IjEiPgogICAgICA8c3RvcCBvZmZzZXQ9IjAiIHN0b3AtY29sb3I9IiMwMGM0Y2MiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIwLjQ1IiBzdG9wLWNvbG9yPSIjNGE1Y2ZmIi8+CiAgICAgIDxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzhiM2RmZiIvPgogICAgPC9saW5lYXJHcmFkaWVudD4KICA8L2RlZnM+CiAgPGNpcmNsZSBjeD0iNDgiIGN5PSI0OCIgcj0iNDgiIGZpbGw9InVybCgjZykiLz4KICA8ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgyNiAyNikgc2NhbGUoMS44MzMzKSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+CiAgICA8cGF0aCBkPSJNOCAydjRNMTYgMnY0Ii8+CiAgICA8cmVjdCB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHg9IjMiIHk9IjQiIHJ4PSIyIi8+CiAgICA8cGF0aCBkPSJNMyAxMGgxOE04IDE0aC4wMU0xMiAxNGguMDFNMTYgMTRoLjAxTTggMThoLjAxTTEyIDE4aC4wMU0xNiAxOGguMDEiLz4KICA8L2c+Cjwvc3ZnPgo=
+        - Category: PAGE_HEADER_LOGO
+          ColorMode: LIGHT
+          Extension: SVG
+          Bytes: PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNjQiIGhlaWdodD0iNjYiIHZpZXdCb3g9IjAgMCAyNjQgNjYiPgogIDxkZWZzPgogICAgPGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMCIgeTE9IjAiIHgyPSIxIiB5Mj0iMSI+CiAgICAgIDxzdG9wIG9mZnNldD0iMCIgc3RvcC1jb2xvcj0iIzAwYzRjYyIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjAuNDUiIHN0b3AtY29sb3I9IiM0YTVjZmYiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjOGIzZGZmIi8+CiAgICA8L2xpbmVhckdyYWRpZW50PgogIDwvZGVmcz4KICA8Y2lyY2xlIGN4PSIzMCIgY3k9IjMzIiByPSIyNCIgZmlsbD0idXJsKCNnKSIgc3Ryb2tlPSIjZmZmZmZmIiBzdHJva2Utd2lkdGg9IjIiLz4KICA8ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgxNy41IDIwLjUpIHNjYWxlKDEuMDQpIiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmYiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj4KICAgIDxwYXRoIGQ9Ik04IDJ2NE0xNiAydjQiLz4KICAgIDxyZWN0IHdpZHRoPSIxOCIgaGVpZ2h0PSIxOCIgeD0iMyIgeT0iNCIgcng9IjIiLz4KICAgIDxwYXRoIGQ9Ik0zIDEwaDE4TTggMTRoLjAxTTEyIDE0aC4wMU0xNiAxNGguMDFNOCAxOGguMDFNMTIgMThoLjAxTTE2IDE4aC4wMSIvPgogIDwvZz4KICA8dGV4dCB4PSI2NCIgeT0iNDAiIGZpbGw9IiNmZmZmZmYiIGZvbnQtZmFtaWx5PSJHZWlzdCwgLWFwcGxlLXN5c3RlbSwgJ1NlZ29lIFVJJywgUm9ib3RvLCBIZWx2ZXRpY2EsIEFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjIwIiBmb250LXdlaWdodD0iNzAwIiBsZXR0ZXItc3BhY2luZz0iLTAuMyI+U3VjY2Vzc2Z1bFN1Y2Nlc3M8L3RleHQ+Cjwvc3ZnPgo=
+        - Category: PAGE_BACKGROUND
+          ColorMode: LIGHT
+          Extension: SVG
+          Bytes: PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNjAwIiBoZWlnaHQ9IjEwMDAiIHZpZXdCb3g9IjAgMCAxNjAwIDEwMDAiIHByZXNlcnZlQXNwZWN0UmF0aW89InhNaWRZTWlkIHNsaWNlIj4KICA8ZGVmcz4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0iYmciIHgxPSIwIiB5MT0iMCIgeDI9IjEiIHkyPSIxIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjMDBjNGNjIi8+CiAgICAgIDxzdG9wIG9mZnNldD0iMC4zOCIgc3RvcC1jb2xvcj0iIzRhNWNmZiIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjAuNzIiIHN0b3AtY29sb3I9IiM4YjNkZmYiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjZmYyZTkzIi8+CiAgICA8L2xpbmVhckdyYWRpZW50PgogICAgPHJhZGlhbEdyYWRpZW50IGlkPSJnbG93Ij4KICAgICAgPHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjZmZmZmZmIiBzdG9wLW9wYWNpdHk9IjAuNDUiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjZmZmZmZmIiBzdG9wLW9wYWNpdHk9IjAiLz4KICAgIDwvcmFkaWFsR3JhZGllbnQ+CiAgICA8cmFkaWFsR3JhZGllbnQgaWQ9InBpbmtHbG93Ij4KICAgICAgPHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjZmYyZTkzIiBzdG9wLW9wYWNpdHk9IjAuNTUiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjZmYyZTkzIiBzdG9wLW9wYWNpdHk9IjAiLz4KICAgIDwvcmFkaWFsR3JhZGllbnQ+CiAgICA8cmFkaWFsR3JhZGllbnQgaWQ9InRlYWxHbG93Ij4KICAgICAgPHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjMDBlNWQ0IiBzdG9wLW9wYWNpdHk9IjAuNSIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEiIHN0b3AtY29sb3I9IiMwMGU1ZDQiIHN0b3Atb3BhY2l0eT0iMCIvPgogICAgPC9yYWRpYWxHcmFkaWVudD4KICA8L2RlZnM+CgogIDxyZWN0IHdpZHRoPSIxNjAwIiBoZWlnaHQ9IjEwMDAiIGZpbGw9InVybCgjYmcpIi8+CgogIDwhLS0gc29mdCBnbG93cyAtLT4KICA8Y2lyY2xlIGN4PSIyMzAiIGN5PSIxODAiIHI9IjQyMCIgZmlsbD0idXJsKCNnbG93KSIvPgogIDxjaXJjbGUgY3g9IjE0MjAiIGN5PSI4ODAiIHI9IjQ2MCIgZmlsbD0idXJsKCNwaW5rR2xvdykiLz4KICA8Y2lyY2xlIGN4PSIxMzUwIiBjeT0iMTIwIiByPSIzMjAiIGZpbGw9InVybCgjZ2xvdykiIG9wYWNpdHk9IjAuNiIvPgogIDxjaXJjbGUgY3g9IjEyMCIgY3k9IjkwMCIgcj0iMzYwIiBmaWxsPSJ1cmwoI3RlYWxHbG93KSIvPgoKICA8IS0tIG91dGxpbmVkIHJpbmdzIC0tPgogIDxnIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiI+CiAgICA8Y2lyY2xlIGN4PSIxNDYwIiBjeT0iMjMwIiByPSIxNTAiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC4zNSIvPgogICAgPGNpcmNsZSBjeD0iMTQ2MCIgY3k9IjIzMCIgcj0iMjE1IiBzdHJva2Utd2lkdGg9IjEuNSIgb3BhY2l0eT0iMC4yIi8+CiAgICA8Y2lyY2xlIGN4PSIxNzAiIGN5PSI3NjAiIHI9IjEyMCIgc3Ryb2tlLXdpZHRoPSIyIiBvcGFjaXR5PSIwLjMiLz4KICAgIDxjaXJjbGUgY3g9IjE3MCIgY3k9Ijc2MCIgcj0iMTgwIiBzdHJva2Utd2lkdGg9IjEuNSIgb3BhY2l0eT0iMC4xOCIvPgogIDwvZz4KCiAgPCEtLSBnZW50bGUgd2F2ZSBhbG9uZyB0aGUgYm90dG9tIC0tPgogIDxwYXRoIGQ9Ik0wIDg2MCBDIDI2MCA4MDAsIDUyMCA5MzAsIDgwMCA4NzAgUyAxMzQwIDgwMCwgMTYwMCA4NjAgTCAxNjAwIDEwMDAgTCAwIDEwMDAgWiIgZmlsbD0iI2ZmZmZmZiIgb3BhY2l0eT0iMC4xMiIvPgogIDxwYXRoIGQ9Ik0wIDkyMCBDIDMwMCA4NzAsIDU2MCA5ODAsIDg2MCA5MzAgUyAxMzYwIDg3MCwgMTYwMCA5MzAgTCAxNjAwIDEwMDAgTCAwIDEwMDAgWiIgZmlsbD0iI2ZmZmZmZiIgb3BhY2l0eT0iMC4xIi8+CgogIDwhLS0gY29uZmV0dGkgLS0+CiAgPGcgb3BhY2l0eT0iMC45Ij4KICAgIDxyZWN0IHg9IjMwMCIgeT0iNDIwIiB3aWR0aD0iMzgiIGhlaWdodD0iMTQiIHJ4PSI3IiBmaWxsPSIjZmZkODRkIiB0cmFuc2Zvcm09InJvdGF0ZSgtMjggMzE5IDQyNykiLz4KICAgIDxyZWN0IHg9IjEyNDAiIHk9IjUyMCIgd2lkdGg9IjM0IiBoZWlnaHQ9IjEzIiByeD0iNi41IiBmaWxsPSIjZmZmZmZmIiBvcGFjaXR5PSIwLjgiIHRyYW5zZm9ybT0icm90YXRlKDMyIDEyNTcgNTI2KSIvPgogICAgPHJlY3QgeD0iMTA4MCIgeT0iMTQwIiB3aWR0aD0iMzAiIGhlaWdodD0iMTIiIHJ4PSI2IiBmaWxsPSIjZmZkODRkIiB0cmFuc2Zvcm09InJvdGF0ZSgxOCAxMDk1IDE0NikiLz4KICAgIDxyZWN0IHg9IjQyMCIgeT0iMTYwIiB3aWR0aD0iMjgiIGhlaWdodD0iMTEiIHJ4PSI1LjUiIGZpbGw9IiNmZmZmZmYiIG9wYWNpdHk9IjAuNzUiIHRyYW5zZm9ybT0icm90YXRlKC0xNSA0MzQgMTY1KSIvPgogICAgPHJlY3QgeD0iMTM4MCIgeT0iNjkwIiB3aWR0aD0iMzIiIGhlaWdodD0iMTIiIHJ4PSI2IiBmaWxsPSIjMDBlNWQ0IiB0cmFuc2Zvcm09InJvdGF0ZSgtMzggMTM5NiA2OTYpIi8+CiAgICA8cmVjdCB4PSI1MjAiIHk9IjgyMCIgd2lkdGg9IjMwIiBoZWlnaHQ9IjEyIiByeD0iNiIgZmlsbD0iI2ZmZmZmZiIgb3BhY2l0eT0iMC43IiB0cmFuc2Zvcm09InJvdGF0ZSgyNCA1MzUgODI2KSIvPgogICAgPGNpcmNsZSBjeD0iMjUwIiBjeT0iNTYwIiByPSI5IiBmaWxsPSIjZmZmZmZmIiBvcGFjaXR5PSIwLjgiLz4KICAgIDxjaXJjbGUgY3g9IjExODAiIGN5PSIzMzAiIHI9IjciIGZpbGw9IiNmZmZmZmYiIG9wYWNpdHk9IjAuNyIvPgogICAgPGNpcmNsZSBjeD0iMTMxMCIgY3k9IjQyMCIgcj0iMTEiIGZpbGw9IiNmZjJlOTMiLz4KICAgIDxjaXJjbGUgY3g9IjM4MCIgY3k9IjMwMCIgcj0iNiIgZmlsbD0iIzAwZTVkNCIvPgogICAgPGNpcmNsZSBjeD0iMTEwMCIgY3k9Ijc2MCIgcj0iOCIgZmlsbD0iI2ZmZDg0ZCIvPgogICAgPGNpcmNsZSBjeD0iNjQwIiBjeT0iMTIwIiByPSI1IiBmaWxsPSIjZmZmZmZmIiBvcGFjaXR5PSIwLjgiLz4KICAgIDxjaXJjbGUgY3g9Ijk4MCIgY3k9Ijg4MCIgcj0iNiIgZmlsbD0iI2ZmZmZmZiIgb3BhY2l0eT0iMC43Ii8+CiAgPC9nPgoKICA8IS0tIHNwYXJrbGVzIC0tPgogIDxnIGZpbGw9IiNmZmZmZmYiPgogICAgPHBhdGggZD0iTTExODAgNjQwIGw2IDE2IDE2IDYgLTE2IDYgLTYgMTYgLTYgLTE2IC0xNiAtNiAxNiAtNiB6IiBvcGFjaXR5PSIwLjg1Ii8+CiAgICA8cGF0aCBkPSJNMzMwIDY0MCBsNSAxMyAxMyA1IC0xMyA1IC01IDEzIC01IC0xMyAtMTMgLTUgMTMgLTUgeiIgb3BhY2l0eT0iMC43NSIvPgogICAgPHBhdGggZD0iTTEwMjAgMjQwIGw0IDEwIDEwIDQgLTEwIDQgLTQgMTAgLTQgLTEwIC0xMCAtNCAxMCAtNCB6IiBvcGFjaXR5PSIwLjciLz4KICA8L2c+Cjwvc3ZnPgo=
+
+Outputs:
+  UserPoolId:
+    Value: !Ref UserPool
+  ClientId:
+    Description: Public OAuth client ID (safe to ship in the frontend build)
+    Value: !Ref UserPoolClient
+  Authority:
+    Description: OIDC issuer the frontend signs in against
+    Value: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}"
+  CognitoDomain:
+    Description: Managed login and logout endpoint
+    Value: !Sub "https://${DomainPrefix}.auth.${AWS::Region}.amazoncognito.com"
+  GoogleRedirectUri:
+    Description: Authorised redirect URI to register on the Google OAuth client
+    Value: !Sub "https://${DomainPrefix}.auth.${AWS::Region}.amazoncognito.com/oauth2/idpresponse"

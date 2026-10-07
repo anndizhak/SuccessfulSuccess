@@ -48,6 +48,10 @@ services:
       target: dev
     environment:
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+      # Empty runs the site without sign-in; `make aws-auth-env` prints the values.
+      NEXT_PUBLIC_COGNITO_AUTHORITY: ${NEXT_PUBLIC_COGNITO_AUTHORITY:-}
+      NEXT_PUBLIC_COGNITO_CLIENT_ID: ${NEXT_PUBLIC_COGNITO_CLIENT_ID:-}
+      NEXT_PUBLIC_COGNITO_DOMAIN: ${NEXT_PUBLIC_COGNITO_DOMAIN:-}
       WATCHPACK_POLLING: "true"
     ports:
       - "${FRONTEND_PORT:-3000}:3000"

@@ -36,9 +36,17 @@ CMD ["node", "server.js"]
 FROM node:22-alpine AS export-builder
 WORKDIR /app
 ARG NEXT_PUBLIC_API_BASE_URL
+# Public sign-in settings from the auth stack's outputs; empty builds the site
+# without sign-in. No secret belongs here: everything NEXT_PUBLIC_* ships in the JS.
+ARG NEXT_PUBLIC_COGNITO_AUTHORITY=""
+ARG NEXT_PUBLIC_COGNITO_CLIENT_ID=""
+ARG NEXT_PUBLIC_COGNITO_DOMAIN=""
 ENV NEXT_TELEMETRY_DISABLED=1 \
     NEXT_OUTPUT=export \
-    NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
+    NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL \
+    NEXT_PUBLIC_COGNITO_AUTHORITY=$NEXT_PUBLIC_COGNITO_AUTHORITY \
+    NEXT_PUBLIC_COGNITO_CLIENT_ID=$NEXT_PUBLIC_COGNITO_CLIENT_ID \
+    NEXT_PUBLIC_COGNITO_DOMAIN=$NEXT_PUBLIC_COGNITO_DOMAIN
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build

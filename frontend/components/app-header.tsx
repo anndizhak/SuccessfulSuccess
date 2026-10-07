@@ -3,6 +3,7 @@
 import { CalendarDays, Plus } from "lucide-react"
 import Link from "next/link"
 
+import { AuthControls } from "@/components/auth-controls"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -15,6 +16,7 @@ import {
 } from "@/components/ui/navigation-menu"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { useMeetings } from "@/hooks/use-meetings"
+import { authEnabled } from "@/lib/auth"
 import { formatTimeRange } from "@/lib/datetime"
 
 export function AppHeader({ onCreate }: { onCreate: () => void }) {
@@ -94,6 +96,8 @@ export function AppHeader({ onCreate }: { onCreate: () => void }) {
           <Plus className="size-4" aria-hidden />
           <span className="hidden sm:inline">New meeting</span>
         </Button>
+
+        {authEnabled ? <AuthControls /> : null}
       </div>
     </header>
   )

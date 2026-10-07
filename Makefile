@@ -21,6 +21,7 @@ APP_STACK ?= $(PROJECT_NAME)-backend
 ECR_STACK ?= $(PROJECT_NAME)-ecr
 FRONTEND_STACK ?= $(PROJECT_NAME)-frontend
 GITHUB_STACK ?= $(PROJECT_NAME)-github
+AUTH_STACK ?= $(PROJECT_NAME)-auth
 # owner/name of the only repository whose main branch may deploy; read from origin.
 GITHUB_REPO ?= $(shell git remote get-url origin 2>/dev/null | sed -E 's|\.git$$||; s|.*github\.com[:/]||')
 # GitHub's OIDC subject carries the owner's and repository's numeric ids too.
@@ -82,7 +83,8 @@ endef
 .PHONY: help up up-build down down-v logs ps migrate revision seed test lint fmt shell-backend psql \
         aws-whoami aws-deploy aws-ecr aws-push aws-deploy-backend aws-release aws-migrate aws-url aws-status aws-logs \
         aws-frontend-cert aws-deploy-frontend aws-frontend-url aws-destroy \
-        deploy-backend deploy-frontend aws-github-oidc
+        deploy-backend deploy-frontend aws-github-oidc \
+        deploy-auth aws-deploy-auth aws-auth-urls aws-auth-env
 
 help:
 	@grep -hE '^[a-z-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -145,6 +147,8 @@ aws-whoami: ## Verify the AWS credentials in .env
 deploy-backend: aws-deploy-backend ## Build the image, push it to ECR, update the backend stack, migrate
 
 deploy-frontend: aws-deploy-frontend ## Build the static bundle, sync it to S3, invalidate CloudFront
+
+deploy-auth: aws-deploy-auth ## Create/update the Cognito user pool, Google sign-in and managed login
 
 aws-deploy: ## Deploy everything: the backend first, then the frontend built against its URL
 	@$(MAKE) --no-print-directory aws-deploy-backend
@@ -273,10 +277,19 @@ aws-deploy-frontend: ## Deploy the frontend to S3 + CloudFront, built against th
 	@api=$$($(call stack-output,$(APP_STACK),ApiUrl) | tr -d '[:space:]'); \
 		bucket=$$($(call stack-output,$(FRONTEND_STACK),BucketName) | tr -d '[:space:]'); \
 		dist=$$($(call stack-output,$(FRONTEND_STACK),DistributionId) | tr -d '[:space:]'); \
+		authority=$$($(call stack-output,$(AUTH_STACK),Authority) 2>/dev/null | tr -d '[:space:]'); \
+		case "$$authority" in ""|None) authority=""; echo "No auth stack — building without sign-in";; esac; \
+		if [ -n "$$authority" ]; then \
+			client=$$($(call stack-output,$(AUTH_STACK),ClientId) | tr -d '[:space:]'); \
+			cognito=$$($(call stack-output,$(AUTH_STACK),CognitoDomain) | tr -d '[:space:]'); \
+			echo "Sign-in: $$authority (client $$client)"; fi; \
 		echo "Building the static export against $$api"; \
 		rm -rf frontend/out; \
 		docker build --target export --output type=local,dest=frontend/out \
-			--build-arg NEXT_PUBLIC_API_BASE_URL="$$api" ./frontend || exit 1; \
+			--build-arg NEXT_PUBLIC_API_BASE_URL="$$api" \
+			--build-arg NEXT_PUBLIC_COGNITO_AUTHORITY="$$authority" \
+			--build-arg NEXT_PUBLIC_COGNITO_CLIENT_ID="$$client" \
+			--build-arg NEXT_PUBLIC_COGNITO_DOMAIN="$$cognito" ./frontend || exit 1; \
 		echo "Uploading to s3://$$bucket"; \
 		$(AWS) s3 sync frontend/out "s3://$$bucket" --delete --exclude "*.html" \
 			--cache-control "public,max-age=31536000,immutable" --only-show-errors || exit 1; \
@@ -323,19 +336,66 @@ aws-github-oidc: ## Create the GitHub OIDC provider and the role CI deploys with
 				"CreateOidcProvider=$$create"
 	@$(call stack-output,$(GITHUB_STACK),RoleArn)
 
+# Callback and logout URLs follow the frontend stack's origins (its CloudFront
+# URL, plus AWS_FRONTEND_DOMAIN once one is set) and local development. They
+# must match the frontend's redirect_uri exactly, trailing slash included.
+aws-deploy-auth: ## Deploy the Cognito user pool, Google sign-in and managed login
+	$(require-aws-credentials)
+	@test -n "$(AWS_COGNITO_DOMAIN_PREFIX)" || { \
+		echo "AWS_COGNITO_DOMAIN_PREFIX is empty — set it in .env (e.g. successfuls)"; exit 1; }
+	@test -n "$(GOOGLE_CLIENT_ID)" -a -n "$(GOOGLE_CLIENT_SECRET)" || \
+		$(AWS) cloudformation describe-stacks --stack-name $(AUTH_STACK) >/dev/null 2>&1 || { \
+		echo "GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET are empty — set them in .env for the first deploy"; exit 1; }
+	@origins=$$($(call stack-output,$(FRONTEND_STACK),AllowedOrigins) 2>/dev/null | tr -d '[:space:]'); \
+		case "$$origins" in ""|None) echo "No frontend stack found — run make deploy-frontend first"; exit 1;; esac; \
+		origins="$$origins,http://localhost:$(or $(FRONTEND_PORT),3000)"; \
+		callbacks=$$(echo "$$origins" | tr ',' '\n' | sed 's|$$|/auth/callback/|' | paste -sd, -); \
+		logouts=$$(echo "$$origins" | tr ',' '\n' | sed 's|$$|/|' | paste -sd, -); \
+		echo "Callback URLs: $$callbacks"; \
+		echo "Logout URLs:   $$logouts"; \
+		$(call wait-stack-idle,$(AUTH_STACK)); \
+		$(call clear-failed-create,$(AUTH_STACK)); \
+		$(AWS) cloudformation deploy \
+			--stack-name $(AUTH_STACK) \
+			--template-file infra/auth.yml \
+			--no-fail-on-empty-changeset \
+			$(STACK_TAGS) \
+			--parameter-overrides \
+				"ProjectName=$(PROJECT_NAME)" \
+				"DomainPrefix=$(AWS_COGNITO_DOMAIN_PREFIX)" \
+				"CallbackUrls=$$callbacks" \
+				"LogoutUrls=$$logouts" \
+				$(if $(GOOGLE_CLIENT_ID),"GoogleClientId=$(GOOGLE_CLIENT_ID)") \
+				$(if $(GOOGLE_CLIENT_SECRET),"GoogleClientSecret=$(GOOGLE_CLIENT_SECRET)")
+	@$(MAKE) --no-print-directory aws-auth-urls
+	@echo "Rebuild the site so it picks up the sign-in settings: make deploy-frontend"
+
+aws-auth-urls: ## Print the login page, the Cognito domain and the URI to register at Google
+	@site=$$($(call stack-output,$(FRONTEND_STACK),SiteUrl) | tr -d '[:space:]'); \
+		echo "Login page:           $${site%/}/login/"; \
+		echo "Cognito domain:       $$($(call stack-output,$(AUTH_STACK),CognitoDomain) | tr -d '[:space:]')"; \
+		echo "Google redirect URI:  $$($(call stack-output,$(AUTH_STACK),GoogleRedirectUri) | tr -d '[:space:]')"
+
+aws-auth-env: ## Print the NEXT_PUBLIC_COGNITO_* lines for .env, to sign in from localhost
+	@echo "NEXT_PUBLIC_COGNITO_AUTHORITY=$$($(call stack-output,$(AUTH_STACK),Authority) | tr -d '[:space:]')"
+	@echo "NEXT_PUBLIC_COGNITO_CLIENT_ID=$$($(call stack-output,$(AUTH_STACK),ClientId) | tr -d '[:space:]')"
+	@echo "NEXT_PUBLIC_COGNITO_DOMAIN=$$($(call stack-output,$(AUTH_STACK),CognitoDomain) | tr -d '[:space:]')"
+
 aws-frontend-url: ## Print the deployed site URL
 	@$(call stack-output,$(FRONTEND_STACK),SiteUrl)
 
 aws-destroy: ## Delete every stack, including the database and its data
 	$(require-aws-credentials)
-	@printf 'Delete %s, %s, %s and %s? The Aurora cluster and all its data go with them (no snapshot). Type yes: ' \
-		"$(GITHUB_STACK)" "$(FRONTEND_STACK)" "$(APP_STACK)" "$(ECR_STACK)"; \
+	@printf 'Delete %s, %s, %s, %s and %s? The Aurora cluster and every user account go with them (no snapshot). Type yes: ' \
+		"$(AUTH_STACK)" "$(GITHUB_STACK)" "$(FRONTEND_STACK)" "$(APP_STACK)" "$(ECR_STACK)"; \
 		read answer; test "$$answer" = "yes" || { echo "Aborted."; exit 1; }
 	@bucket=$$($(call stack-output,$(FRONTEND_STACK),BucketName) 2>/dev/null | tr -d '[:space:]'); \
 		if [ -n "$$bucket" ] && [ "$$bucket" != "None" ]; then \
 			echo "Emptying s3://$$bucket"; \
 			$(AWS) s3 rm "s3://$$bucket" --recursive --only-show-errors || true; \
 		fi
+	-$(AWS) cloudformation delete-stack --stack-name $(AUTH_STACK)
+	-$(AWS) cloudformation wait stack-delete-complete --stack-name $(AUTH_STACK)
 	-$(AWS) cloudformation delete-stack --stack-name $(GITHUB_STACK)
 	-$(AWS) cloudformation wait stack-delete-complete --stack-name $(GITHUB_STACK)
 	-$(AWS) cloudformation delete-stack --stack-name $(FRONTEND_STACK)
