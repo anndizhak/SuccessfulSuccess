@@ -18,6 +18,7 @@ from sqlalchemy.pool import NullPool
 
 from alembic import command
 from app.config import settings
+from app.db import wait_for_database
 from app.main import app
 
 logger = logging.getLogger("meetings.lambda")
@@ -43,6 +44,10 @@ async def _seed() -> None:
 
 
 def _migrate() -> None:
+    # A deploy that lands while Aurora is paused would otherwise fail on the
+    # first connection timeout, although the database is seconds from ready.
+    attempts = asyncio.run(wait_for_database())
+    logger.info("Database reachable after %d attempt(s).", attempts)
     config = Config(str(BASE_DIR / "alembic.ini"))
     config.set_main_option("script_location", str(BASE_DIR / "alembic"))
     command.upgrade(config, "head")

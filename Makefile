@@ -1,4 +1,5 @@
 COMPOSE ?= docker compose
+comma := ,
 
 # Local configuration (gitignored). These assignments beat variables exported in
 # the shell, so override one on the command line instead: make aws-deploy-backend
@@ -7,6 +8,10 @@ COMPOSE ?= docker compose
 # Every stack (ECR, Lambda, Aurora, S3 + CloudFront) is created in this one region.
 AWS_REGION ?= us-east-1
 export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION PROJECT_NAME
+# Secrets reach recipes as environment variables and are written $$NAME there,
+# never $(NAME): a recipe's text is printed by `make -n` and on a shell error,
+# and must not contain a secret's value.
+export AWS_DB_PASSWORD GOOGLE_CLIENT_SECRET
 
 # The AWS CLI runs in a container so nothing has to be installed on the host.
 # The repository is mounted at /aws (the image's workdir) so the CLI can read
@@ -22,6 +27,14 @@ ECR_STACK ?= $(PROJECT_NAME)-ecr
 FRONTEND_STACK ?= $(PROJECT_NAME)-frontend
 GITHUB_STACK ?= $(PROJECT_NAME)-github
 AUTH_STACK ?= $(PROJECT_NAME)-auth
+REPORTS_STACK ?= $(PROJECT_NAME)-reports
+# Every Monday 07:00 in APP_TIMEZONE. A test deploy can pass
+# REPORT_SCHEDULE="rate(5 minutes)"; the next plain deploy restores the cron.
+REPORT_SCHEDULE ?= cron(0 7 ? * MON *)
+# The builder gets an image of its own, built from the working tree, so report
+# code can ship before (or without) a backend deploy. The tag names the commit,
+# and says when the tree had uncommitted changes.
+REPORTS_IMAGE_TAG ?= reports-$(shell git rev-parse --short HEAD 2>/dev/null)$(shell test -z "$$(git status --porcelain 2>/dev/null)" || echo -dirty)
 # owner/name of the only repository whose main branch may deploy; read from origin.
 GITHUB_REPO ?= $(shell git remote get-url origin 2>/dev/null | sed -E 's|\.git$$||; s|.*github\.com[:/]||')
 # GitHub's OIDC subject carries the owner's and repository's numeric ids too.
@@ -66,7 +79,7 @@ clear-failed-create = if [ "$$($(AWS) cloudformation describe-stacks --stack-nam
 
 # Fail early and clearly when .env has no credentials in it.
 define require-aws-credentials
-	@test -n "$(AWS_ACCESS_KEY_ID)" -a -n "$(AWS_SECRET_ACCESS_KEY)" || { \
+	@test -n "$$AWS_ACCESS_KEY_ID" -a -n "$$AWS_SECRET_ACCESS_KEY" || { \
 		echo "AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY are empty — set them in .env"; \
 		exit 1; }
 endef
@@ -74,7 +87,7 @@ endef
 # The password only has to be given when the backend stack is first created;
 # updates (and CI, which never sees it) keep the value the stack already has.
 define require-db-password
-	@test -n "$(AWS_DB_PASSWORD)" || $(AWS) cloudformation describe-stacks --stack-name $(APP_STACK) \
+	@test -n "$$AWS_DB_PASSWORD" || $(AWS) cloudformation describe-stacks --stack-name $(APP_STACK) \
 		>/dev/null 2>&1 || { \
 		echo "AWS_DB_PASSWORD is empty — set it in .env for the first deploy (8+ chars, [A-Za-z0-9_-] only)"; \
 		exit 1; }
@@ -84,7 +97,8 @@ endef
         aws-whoami aws-deploy aws-ecr aws-push aws-deploy-backend aws-release aws-migrate aws-url aws-status aws-logs \
         aws-frontend-cert aws-deploy-frontend aws-frontend-url aws-destroy \
         deploy-backend deploy-frontend aws-github-oidc \
-        deploy-auth aws-deploy-auth aws-auth-urls aws-auth-env
+        deploy-auth aws-deploy-auth aws-auth-urls aws-auth-env \
+        deploy-reports aws-deploy-reports report-invoke report-logs report-now report-queues
 
 help:
 	@grep -hE '^[a-z-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -150,6 +164,8 @@ deploy-frontend: aws-deploy-frontend ## Build the static bundle, sync it to S3, 
 
 deploy-auth: aws-deploy-auth ## Create/update the Cognito user pool, Google sign-in and managed login
 
+deploy-reports: aws-deploy-reports ## Deploy the weekly report: bucket, S3 endpoint, functions and triggers
+
 aws-deploy: ## Deploy everything: the backend first, then the frontend built against its URL
 	@$(MAKE) --no-print-directory aws-deploy-backend
 	@$(MAKE) --no-print-directory aws-deploy-frontend
@@ -213,7 +229,7 @@ aws-release: ## Point the backend at an image already in ECR (IMAGE_TAG), then m
 				ImageUri="$$repo@$$digest" \
 				"Architecture=$(AWS_LAMBDA_ARCH)" \
 				"CorsOrigins=$$cors" \
-				$(if $(AWS_DB_PASSWORD),"DbPassword=$(AWS_DB_PASSWORD)") \
+				$(if $(AWS_DB_PASSWORD),"DbPassword=$$AWS_DB_PASSWORD") \
 				$(if $(APP_TIMEZONE),"AppTimezone=$(APP_TIMEZONE)") \
 				$(if $(AWS_SEED_DEMO_DATA),"SeedDemoData=$(AWS_SEED_DEMO_DATA)")
 	@$(MAKE) --no-print-directory aws-migrate
@@ -343,7 +359,7 @@ aws-deploy-auth: ## Deploy the Cognito user pool, Google sign-in and managed log
 	$(require-aws-credentials)
 	@test -n "$(AWS_COGNITO_DOMAIN_PREFIX)" || { \
 		echo "AWS_COGNITO_DOMAIN_PREFIX is empty — set it in .env (e.g. successfuls)"; exit 1; }
-	@test -n "$(GOOGLE_CLIENT_ID)" -a -n "$(GOOGLE_CLIENT_SECRET)" || \
+	@test -n "$(GOOGLE_CLIENT_ID)" -a -n "$$GOOGLE_CLIENT_SECRET" || \
 		$(AWS) cloudformation describe-stacks --stack-name $(AUTH_STACK) >/dev/null 2>&1 || { \
 		echo "GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET are empty — set them in .env for the first deploy"; exit 1; }
 	@origins=$$($(call stack-output,$(FRONTEND_STACK),AllowedOrigins) 2>/dev/null | tr -d '[:space:]'); \
@@ -366,7 +382,7 @@ aws-deploy-auth: ## Deploy the Cognito user pool, Google sign-in and managed log
 				"CallbackUrls=$$callbacks" \
 				"LogoutUrls=$$logouts" \
 				$(if $(GOOGLE_CLIENT_ID),"GoogleClientId=$(GOOGLE_CLIENT_ID)") \
-				$(if $(GOOGLE_CLIENT_SECRET),"GoogleClientSecret=$(GOOGLE_CLIENT_SECRET)")
+				$(if $(GOOGLE_CLIENT_SECRET),"GoogleClientSecret=$$GOOGLE_CLIENT_SECRET")
 	@$(MAKE) --no-print-directory aws-auth-urls
 	@echo "Rebuild the site so it picks up the sign-in settings: make deploy-frontend"
 
@@ -381,19 +397,134 @@ aws-auth-env: ## Print the NEXT_PUBLIC_COGNITO_* lines for .env, to sign in from
 	@echo "NEXT_PUBLIC_COGNITO_CLIENT_ID=$$($(call stack-output,$(AUTH_STACK),ClientId) | tr -d '[:space:]')"
 	@echo "NEXT_PUBLIC_COGNITO_DOMAIN=$$($(call stack-output,$(AUTH_STACK),CognitoDomain) | tr -d '[:space:]')"
 
+# The builder runs where the backend function runs: the VPC, its subnets and
+# security group, and the route tables of those subnets are read from that
+# function rather than configured. A subnet without its own route table uses
+# the VPC's main one. The image is built from the working tree (see
+# REPORTS_IMAGE_TAG) for the backend's architecture. The database password is
+# only needed for the first deploy; updates keep the stack's value.
+aws-deploy-reports: ## Deploy the weekly report stack (bucket, S3 endpoint, builder, schedule)
+	$(require-aws-credentials)
+	@test -n "$$AWS_DB_PASSWORD" || $(AWS) cloudformation describe-stacks --stack-name $(REPORTS_STACK) \
+		>/dev/null 2>&1 || { echo "AWS_DB_PASSWORD is empty — set it in .env for the first deploy"; exit 1; }
+	@test -n "$(REPORT_EMAIL)" || { \
+		echo "REPORT_EMAIL is empty — set it in .env: the SES identity, sender and recipient"; exit 1; }
+	@fn=$$($(call stack-output,$(APP_STACK),FunctionName) 2>/dev/null | tr -d '[:space:]'); \
+		backend_arch=$$($(AWS) lambda get-function-configuration --function-name "$$fn" \
+			--query 'Architectures[0]' --output text | tr -d '[:space:]'); \
+		test "$$backend_arch" = "$(AWS_LAMBDA_ARCH)" || { \
+			echo "The backend runs on $$backend_arch: run make deploy-reports AWS_LAMBDA_ARCH=$$backend_arch"; exit 1; }
+	@$(MAKE) --no-print-directory aws-push IMAGE_TAG=$(REPORTS_IMAGE_TAG)
+	@fn=$$($(call stack-output,$(APP_STACK),FunctionName) 2>/dev/null | tr -d '[:space:]'); \
+		case "$$fn" in ""|None) echo "No backend stack found — run make deploy-backend first"; exit 1;; esac; \
+		vpc=$$($(AWS) lambda get-function-configuration --function-name "$$fn" \
+			--query 'VpcConfig.VpcId' --output text | tr -d '[:space:]'); \
+		subnets=$$($(AWS) lambda get-function-configuration --function-name "$$fn" \
+			--query 'VpcConfig.SubnetIds' --output text); \
+		sg=$$($(AWS) lambda get-function-configuration --function-name "$$fn" \
+			--query 'VpcConfig.SecurityGroupIds[0]' --output text | tr -d '[:space:]'); \
+		arch=$$($(AWS) lambda get-function-configuration --function-name "$$fn" \
+			--query 'Architectures[0]' --output text | tr -d '[:space:]'); \
+		repo=$$($(call stack-output,$(ECR_STACK),RepositoryUri) | tr -d '[:space:]'); \
+		digest=$$($(AWS) ecr describe-images --repository-name "$${repo#*/}" \
+			--image-ids imageTag=$(REPORTS_IMAGE_TAG) --query 'imageDetails[0].imageDigest' \
+			--output text | tr -d '[:space:]'); \
+		test -n "$$digest" -a "$$digest" != "None" || { echo "No image tagged $(REPORTS_IMAGE_TAG)"; exit 1; }; \
+		image="$$repo@$$digest"; \
+		db=$$($(call stack-output,$(APP_STACK),DatabaseEndpoint) | tr -d '[:space:]'); \
+		main=$$($(AWS) ec2 describe-route-tables \
+			--filters Name=vpc-id,Values=$$vpc Name=association.main,Values=true \
+			--query 'RouteTables[0].RouteTableId' --output text | tr -d '[:space:]'); \
+		tables=$$(for s in $$subnets; do \
+			rt=$$($(AWS) ec2 describe-route-tables --filters Name=association.subnet-id,Values=$$s \
+				--query 'RouteTables[0].RouteTableId' --output text | tr -d '[:space:]'); \
+			if [ -z "$$rt" ] || [ "$$rt" = None ]; then rt=$$main; fi; echo "$$rt"; \
+			done | sort -u | paste -sd, -); \
+		echo "vpc=$$vpc route tables=$$tables sg=$$sg arch=$$arch"; \
+		echo "image=$(REPORTS_IMAGE_TAG) → $$image"; \
+		echo "schedule=$(REPORT_SCHEDULE) ($(or $(APP_TIMEZONE),Europe/Kyiv)) email=$(REPORT_EMAIL)"; \
+		$(call wait-stack-idle,$(REPORTS_STACK)); \
+		$(call clear-failed-create,$(REPORTS_STACK)); \
+		$(AWS) cloudformation deploy \
+			--stack-name $(REPORTS_STACK) \
+			--template-file infra/reports.yml \
+			--capabilities CAPABILITY_IAM \
+			--no-fail-on-empty-changeset \
+			$(STACK_TAGS) \
+			--parameter-overrides \
+				"ProjectName=$(PROJECT_NAME)" \
+				"VpcId=$$vpc" \
+				"RouteTableIds=$$tables" \
+				"SubnetIds=$$(echo $$subnets | tr ' ' ',')" \
+				"SecurityGroupId=$$sg" \
+				"ImageUri=$$image" \
+				"Architecture=$$arch" \
+				"DbEndpoint=$$db" \
+				"ScheduleExpression=$(REPORT_SCHEDULE)" \
+				"ReportEmail=$(REPORT_EMAIL)" \
+				$(if $(APP_TIMEZONE),"AppTimezone=$(APP_TIMEZONE)") \
+				$(if $(AWS_DB_PASSWORD),"DbPassword=$$AWS_DB_PASSWORD")
+	@echo "Reports bucket: s3://$$($(call stack-output,$(REPORTS_STACK),BucketName) | tr -d '[:space:]')"
+
+# Calls the builder directly, as the schedule does, but for a chosen week.
+# WEEK is optional: without it the builder takes the previous ISO week.
+report-invoke: ## Build a report now by invoking the builder directly: make report-invoke WEEK=2026-W40
+	$(require-aws-credentials)
+	@fn=$$($(call stack-output,$(REPORTS_STACK),BuilderFunctionName) | tr -d '[:space:]'); \
+		payload='{"source": "manual"$(if $(WEEK),$(comma) "week": "$(WEEK)")}'; \
+		echo "Invoking $$fn with $$payload"; \
+		$(AWS) lambda invoke --function-name "$$fn" --cli-binary-format raw-in-base64-out \
+			--cli-read-timeout 180 --payload "$$payload" /dev/stdout \
+			--query 'FunctionError' --output text
+
+# The on-demand path: the same message the schedule sends, on the same queue.
+# This is how an old report is rebuilt. Without WEEK the builder takes the
+# previous ISO week, exactly as on Monday morning.
+report-now: ## Request a report through the queue: make report-now WEEK=2026-W39
+	$(require-aws-credentials)
+	@queue=$$($(call stack-output,$(REPORTS_STACK),RequestQueueUrl) | tr -d '[:space:]'); \
+		body='{"week": $(if $(WEEK),"$(WEEK)",null), "source": "make"}'; \
+		echo "Sending $$body"; \
+		$(AWS) sqs send-message --queue-url "$$queue" --message-body "$$body" \
+			--query 'MessageId' --output text | sed 's/^/MessageId: /'
+
+# The output name has to be spelled out per call: stack-output puts it inside
+# a single-quoted --query, where a shell variable would not be expanded.
+report-queues: ## Messages waiting, in flight and in the dead-letter queue
+	@for url in $$($(call stack-output,$(REPORTS_STACK),RequestQueueUrl)) \
+			$$($(call stack-output,$(REPORTS_STACK),DeadLetterQueueUrl)); do \
+		$(AWS) sqs get-queue-attributes --queue-url "$$url" \
+			--attribute-names ApproximateNumberOfMessages ApproximateNumberOfMessagesNotVisible \
+			--query 'Attributes.[ApproximateNumberOfMessages,ApproximateNumberOfMessagesNotVisible]' \
+			--output text | awk -v q="$${url##*/}" '{printf "%-40s waiting %s, in flight %s\n", q, $$1, $$2}'; \
+	done
+
+report-logs: ## Show the last hour of the report builder's and mailer's logs
+	@echo "--- builder"; $(AWS) logs tail "$$($(call stack-output,$(REPORTS_STACK),BuilderLogGroup) | tr -d '[:space:]')" \
+		--since 1h --format short
+	@echo "--- mailer"; $(AWS) logs tail "$$($(call stack-output,$(REPORTS_STACK),MailerLogGroup) | tr -d '[:space:]')" \
+		--since 1h --format short
+
 aws-frontend-url: ## Print the deployed site URL
 	@$(call stack-output,$(FRONTEND_STACK),SiteUrl)
 
 aws-destroy: ## Delete every stack, including the database and its data
 	$(require-aws-credentials)
-	@printf 'Delete %s, %s, %s, %s and %s? The Aurora cluster and every user account go with them (no snapshot). Type yes: ' \
-		"$(AUTH_STACK)" "$(GITHUB_STACK)" "$(FRONTEND_STACK)" "$(APP_STACK)" "$(ECR_STACK)"; \
+	@printf 'Delete %s, %s, %s, %s, %s and %s? The Aurora cluster, every user account and every report go with them (no snapshot). Type yes: ' \
+		"$(REPORTS_STACK)" "$(AUTH_STACK)" "$(GITHUB_STACK)" "$(FRONTEND_STACK)" "$(APP_STACK)" "$(ECR_STACK)"; \
 		read answer; test "$$answer" = "yes" || { echo "Aborted."; exit 1; }
 	@bucket=$$($(call stack-output,$(FRONTEND_STACK),BucketName) 2>/dev/null | tr -d '[:space:]'); \
 		if [ -n "$$bucket" ] && [ "$$bucket" != "None" ]; then \
 			echo "Emptying s3://$$bucket"; \
 			$(AWS) s3 rm "s3://$$bucket" --recursive --only-show-errors || true; \
 		fi
+	@reports=$$($(call stack-output,$(REPORTS_STACK),BucketName) 2>/dev/null | tr -d '[:space:]'); \
+		if [ -n "$$reports" ] && [ "$$reports" != "None" ]; then \
+			echo "Emptying s3://$$reports"; \
+			$(AWS) s3 rm "s3://$$reports" --recursive --only-show-errors || true; \
+		fi
+	-$(AWS) cloudformation delete-stack --stack-name $(REPORTS_STACK)
+	-$(AWS) cloudformation wait stack-delete-complete --stack-name $(REPORTS_STACK)
 	-$(AWS) cloudformation delete-stack --stack-name $(AUTH_STACK)
 	-$(AWS) cloudformation wait stack-delete-complete --stack-name $(AUTH_STACK)
 	-$(AWS) cloudformation delete-stack --stack-name $(GITHUB_STACK)
