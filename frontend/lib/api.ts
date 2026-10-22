@@ -1,4 +1,6 @@
 import type {
+  Agenda,
+  AgendaSaveInput,
   ApiErrorBody,
   ApiErrorDetail,
   Meeting,
@@ -86,4 +88,16 @@ export function createMeeting(payload: MeetingCreateInput) {
 
 export function deleteMeeting(id: string) {
   return request<void>(`/api/v1/meetings/${id}`, { method: "DELETE" })
+}
+
+export function getAgenda(meetingId: string) {
+  return request<Agenda>(`/api/v1/meetings/${meetingId}/agenda`)
+}
+
+/** Replaces the meeting's whole agenda. */
+export function saveAgenda(meetingId: string, payload: AgendaSaveInput) {
+  return request<Agenda>(`/api/v1/meetings/${meetingId}/agenda`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
 }

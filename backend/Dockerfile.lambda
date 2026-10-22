@@ -2,7 +2,10 @@
 # backend/Dockerfile stays the local/compose image; this one serves the same app
 # through app/lambda_handler.py (Mangum). The platform comes from the build's
 # --platform flag, which the Makefile derives from AWS_LAMBDA_ARCH.
-FROM public.ecr.aws/lambda/python:3.12
+# Pinned by digest: builds are reproducible, and a new upstream release cannot
+# stall a deploy by downloading a fresh 145 MB base layer mid-build. Update the
+# digest deliberately (docker buildx imagetools inspect public.ecr.aws/lambda/python:3.12).
+FROM public.ecr.aws/lambda/python:3.12@sha256:0f717e90928485c3318cd5598d9572d504f02ae5f69a8e7292c5008269125e89
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

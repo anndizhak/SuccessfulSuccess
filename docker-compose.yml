@@ -52,6 +52,8 @@ services:
       NEXT_PUBLIC_COGNITO_AUTHORITY: ${NEXT_PUBLIC_COGNITO_AUTHORITY:-}
       NEXT_PUBLIC_COGNITO_CLIENT_ID: ${NEXT_PUBLIC_COGNITO_CLIENT_ID:-}
       NEXT_PUBLIC_COGNITO_DOMAIN: ${NEXT_PUBLIC_COGNITO_DOMAIN:-}
+      # The deployed agenda parser (make aws-auth-env prints it); empty hides "Paste an agenda".
+      NEXT_PUBLIC_PARSER_URL: ${NEXT_PUBLIC_PARSER_URL:-}
       WATCHPACK_POLLING: "true"
     ports:
       - "${FRONTEND_PORT:-3000}:3000"

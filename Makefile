@@ -13,6 +13,15 @@ export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION PROJ
 # and must not contain a secret's value.
 export AWS_DB_PASSWORD GOOGLE_CLIENT_SECRET
 
+# The agenda parser's model and Bedrock API (lab defaults; .env may override).
+PARSER_API ?= mantle
+PARSER_MODEL ?= anthropic.claude-opus-5-5
+export PARSER_API PARSER_MODEL
+# Passed into the backend container by name only, so no value is ever part of
+# a command line.
+LLM_ENV = -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN -e AWS_REGION \
+	-e PARSER_API -e PARSER_MODEL
+
 # The AWS CLI runs in a container so nothing has to be installed on the host.
 # The repository is mounted at /aws (the image's workdir) so the CLI can read
 # infra/*.yml. Pass AWS=aws to use a CLI installed on the host instead.
@@ -28,6 +37,7 @@ FRONTEND_STACK ?= $(PROJECT_NAME)-frontend
 GITHUB_STACK ?= $(PROJECT_NAME)-github
 AUTH_STACK ?= $(PROJECT_NAME)-auth
 REPORTS_STACK ?= $(PROJECT_NAME)-reports
+AI_STACK ?= $(PROJECT_NAME)-ai
 # Every Monday 07:00 in APP_TIMEZONE. A test deploy can pass
 # REPORT_SCHEDULE="rate(5 minutes)"; the next plain deploy restores the cron.
 REPORT_SCHEDULE ?= cron(0 7 ? * MON *)
@@ -35,6 +45,8 @@ REPORT_SCHEDULE ?= cron(0 7 ? * MON *)
 # code can ship before (or without) a backend deploy. The tag names the commit,
 # and says when the tree had uncommitted changes.
 REPORTS_IMAGE_TAG ?= reports-$(shell git rev-parse --short HEAD 2>/dev/null)$(shell test -z "$$(git status --porcelain 2>/dev/null)" || echo -dirty)
+# The agenda parser's image, built from the working tree the same way.
+AI_IMAGE_TAG ?= ai-$(shell git rev-parse --short HEAD 2>/dev/null)$(shell test -z "$$(git status --porcelain 2>/dev/null)" || echo -dirty)
 # owner/name of the only repository whose main branch may deploy; read from origin.
 GITHUB_REPO ?= $(shell git remote get-url origin 2>/dev/null | sed -E 's|\.git$$||; s|.*github\.com[:/]||')
 # GitHub's OIDC subject carries the owner's and repository's numeric ids too.
@@ -98,7 +110,8 @@ endef
         aws-frontend-cert aws-deploy-frontend aws-frontend-url aws-destroy \
         deploy-backend deploy-frontend aws-github-oidc \
         deploy-auth aws-deploy-auth aws-auth-urls aws-auth-env \
-        deploy-reports aws-deploy-reports report-invoke report-logs report-now report-queues
+        deploy-reports aws-deploy-reports report-invoke report-logs report-now report-queues \
+        llm-hello parse deploy-ai aws-deploy-ai parser-logs
 
 help:
 	@grep -hE '^[a-z-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -146,6 +159,17 @@ fmt: ## Format the backend and frontend code
 	$(COMPOSE) exec backend ruff format .
 	$(COMPOSE) exec frontend npm run format
 
+llm-hello: ## First call to Claude on Bedrock: answer, stop_reason, usage (PARSER_API, PARSER_MODEL)
+	$(require-aws-credentials)
+	@$(COMPOSE) exec -T $(LLM_ENV) backend python -m app.ai.hello
+
+# TEXT reaches the container as an environment variable, not inside a command.
+parse: export TEXT := $(TEXT)
+parse: ## Parse an agenda from text with the model: make parse TEXT="Пн 10:00, синк ..."
+	$(require-aws-credentials)
+	@test -n "$(TEXT)" || { echo 'usage: make parse TEXT="..."'; exit 1; }
+	@$(COMPOSE) exec -T $(LLM_ENV) -e TEXT backend python -m app.ai.agenda
+
 shell-backend: ## Open a shell in the backend container
 	$(COMPOSE) exec backend sh
 
@@ -165,6 +189,8 @@ deploy-frontend: aws-deploy-frontend ## Build the static bundle, sync it to S3, 
 deploy-auth: aws-deploy-auth ## Create/update the Cognito user pool, Google sign-in and managed login
 
 deploy-reports: aws-deploy-reports ## Deploy the weekly report: bucket, S3 endpoint, functions and triggers
+
+deploy-ai: aws-deploy-ai ## Deploy the agenda parser: its function, role and function URL
 
 aws-deploy: ## Deploy everything: the backend first, then the frontend built against its URL
 	@$(MAKE) --no-print-directory aws-deploy-backend
@@ -235,13 +261,25 @@ aws-release: ## Point the backend at an image already in ECR (IMAGE_TAG), then m
 	@$(MAKE) --no-print-directory aws-migrate
 	@$(MAKE) --no-print-directory aws-url
 
-aws-migrate: ## Apply database migrations (invokes the backend function directly)
+# Aurora pauses when idle, and after a long pause it can take longer to resume
+# than one invocation may wait (the function's 60 s limit). The first attempt
+# wakes it even when it times out, so the whole call is retried a few times.
+MIGRATE_ATTEMPTS ?= 3
+
+aws-migrate: ## Apply database migrations (invokes the backend function directly, retrying while Aurora resumes)
 	@fn=$$($(call stack-output,$(APP_STACK),FunctionName) | tr -d '[:space:]'); \
-		echo "Migrating ($$fn)"; \
-		err=$$($(AWS) lambda invoke --function-name "$$fn" \
-			--cli-binary-format raw-in-base64-out --payload '{"action":"migrate"}' \
-			--query FunctionError --output text /dev/null | tr -d '[:space:]'); \
-		test "$$err" = "None" || { echo "Migration failed ($$err) — see make aws-logs"; exit 1; }
+		attempt=1; \
+		while :; do \
+			echo "Migrating ($$fn), attempt $$attempt of $(MIGRATE_ATTEMPTS)"; \
+			err=$$($(AWS) lambda invoke --function-name "$$fn" --cli-read-timeout 120 \
+				--cli-binary-format raw-in-base64-out --payload '{"action":"migrate"}' \
+				--query FunctionError --output text /dev/null | tr -d '[:space:]'); \
+			if [ "$$err" = "None" ]; then echo "Migrations applied."; break; fi; \
+			if [ $$attempt -ge $(MIGRATE_ATTEMPTS) ]; then \
+				echo "Migration failed $$attempt times ($$err) — see make aws-logs"; exit 1; fi; \
+			echo "Attempt $$attempt failed ($$err), probably Aurora still resuming — retrying in 10 s"; \
+			attempt=$$((attempt + 1)); sleep 10; \
+		done
 
 aws-url: ## Print the deployed API URL
 	@$(call stack-output,$(APP_STACK),ApiUrl)
@@ -299,13 +337,17 @@ aws-deploy-frontend: ## Deploy the frontend to S3 + CloudFront, built against th
 			client=$$($(call stack-output,$(AUTH_STACK),ClientId) | tr -d '[:space:]'); \
 			cognito=$$($(call stack-output,$(AUTH_STACK),CognitoDomain) | tr -d '[:space:]'); \
 			echo "Sign-in: $$authority (client $$client)"; fi; \
+		parser=$$($(call stack-output,$(AI_STACK),ParserUrl) 2>/dev/null | tr -d '[:space:]'); \
+		case "$$parser" in ""|None) parser=""; echo "No AI stack — building without Paste an agenda";; \
+			*) echo "Agenda parser: $$parser";; esac; \
 		echo "Building the static export against $$api"; \
 		rm -rf frontend/out; \
 		docker build --target export --output type=local,dest=frontend/out \
 			--build-arg NEXT_PUBLIC_API_BASE_URL="$$api" \
 			--build-arg NEXT_PUBLIC_COGNITO_AUTHORITY="$$authority" \
 			--build-arg NEXT_PUBLIC_COGNITO_CLIENT_ID="$$client" \
-			--build-arg NEXT_PUBLIC_COGNITO_DOMAIN="$$cognito" ./frontend || exit 1; \
+			--build-arg NEXT_PUBLIC_COGNITO_DOMAIN="$$cognito" \
+			--build-arg NEXT_PUBLIC_PARSER_URL="$$parser" ./frontend || exit 1; \
 		echo "Uploading to s3://$$bucket"; \
 		$(AWS) s3 sync frontend/out "s3://$$bucket" --delete --exclude "*.html" \
 			--cache-control "public,max-age=31536000,immutable" --only-show-errors || exit 1; \
@@ -396,6 +438,7 @@ aws-auth-env: ## Print the NEXT_PUBLIC_COGNITO_* lines for .env, to sign in from
 	@echo "NEXT_PUBLIC_COGNITO_AUTHORITY=$$($(call stack-output,$(AUTH_STACK),Authority) | tr -d '[:space:]')"
 	@echo "NEXT_PUBLIC_COGNITO_CLIENT_ID=$$($(call stack-output,$(AUTH_STACK),ClientId) | tr -d '[:space:]')"
 	@echo "NEXT_PUBLIC_COGNITO_DOMAIN=$$($(call stack-output,$(AUTH_STACK),CognitoDomain) | tr -d '[:space:]')"
+	@echo "NEXT_PUBLIC_PARSER_URL=$$($(call stack-output,$(AI_STACK),ParserUrl) 2>/dev/null | tr -d '[:space:]')"
 
 # The builder runs where the backend function runs: the VPC, its subnets and
 # security group, and the route tables of those subnets are read from that
@@ -466,6 +509,57 @@ aws-deploy-reports: ## Deploy the weekly report stack (bucket, S3 endpoint, buil
 				$(if $(AWS_DB_PASSWORD),"DbPassword=$$AWS_DB_PASSWORD")
 	@echo "Reports bucket: s3://$$($(call stack-output,$(REPORTS_STACK),BucketName) | tr -d '[:space:]')"
 
+# The parser runs outside the VPC and needs no database; it is built from the
+# working tree (AI_IMAGE_TAG) for the backend's architecture. Only users of the
+# auth stack's pool and client may call it, from the frontend stack's origins
+# (plus local development).
+aws-deploy-ai: ## Deploy the agenda parser stack (function outside the VPC, function URL)
+	$(require-aws-credentials)
+	@fn=$$($(call stack-output,$(APP_STACK),FunctionName) 2>/dev/null | tr -d '[:space:]'); \
+		backend_arch=$$($(AWS) lambda get-function-configuration --function-name "$$fn" \
+			--query 'Architectures[0]' --output text | tr -d '[:space:]'); \
+		test "$$backend_arch" = "$(AWS_LAMBDA_ARCH)" || { \
+			echo "The backend runs on $$backend_arch: run make deploy-ai AWS_LAMBDA_ARCH=$$backend_arch"; exit 1; }
+	@pool=$$($(call stack-output,$(AUTH_STACK),UserPoolId) 2>/dev/null | tr -d '[:space:]'); \
+		case "$$pool" in ""|None) echo "No auth stack found — run make deploy-auth first"; exit 1;; esac
+	@test -n "$(REPORT_EMAIL)" || { echo "REPORT_EMAIL is empty — set it in .env: the budget alarm is sent there"; exit 1; }
+	@$(MAKE) --no-print-directory aws-push IMAGE_TAG=$(AI_IMAGE_TAG)
+	@repo=$$($(call stack-output,$(ECR_STACK),RepositoryUri) | tr -d '[:space:]'); \
+		digest=$$($(AWS) ecr describe-images --repository-name "$${repo#*/}" \
+			--image-ids imageTag=$(AI_IMAGE_TAG) --query 'imageDetails[0].imageDigest' \
+			--output text | tr -d '[:space:]'); \
+		test -n "$$digest" -a "$$digest" != "None" || { echo "No image tagged $(AI_IMAGE_TAG)"; exit 1; }; \
+		pool=$$($(call stack-output,$(AUTH_STACK),UserPoolId) | tr -d '[:space:]'); \
+		client=$$($(call stack-output,$(AUTH_STACK),ClientId) | tr -d '[:space:]'); \
+		origins=$$($(call stack-output,$(FRONTEND_STACK),AllowedOrigins) | tr -d '[:space:]'); \
+		origins="$$origins,http://localhost:$(or $(FRONTEND_PORT),3000)"; \
+		echo "image=$(AI_IMAGE_TAG) → $$repo@$$digest"; \
+		echo "api=$(PARSER_API) model=$(PARSER_MODEL) pool=$$pool client=$$client"; \
+		echo "origins=$$origins"; \
+		$(call wait-stack-idle,$(AI_STACK)); \
+		$(call clear-failed-create,$(AI_STACK)); \
+		$(AWS) cloudformation deploy \
+			--stack-name $(AI_STACK) \
+			--template-file infra/ai.yml \
+			--capabilities CAPABILITY_IAM \
+			--no-fail-on-empty-changeset \
+			$(STACK_TAGS) \
+			--parameter-overrides \
+				"ProjectName=$(PROJECT_NAME)" \
+				"ImageUri=$$repo@$$digest" \
+				"Architecture=$(AWS_LAMBDA_ARCH)" \
+				"ParserApi=$(PARSER_API)" \
+				"ParserModel=$(PARSER_MODEL)" \
+				"UserPoolId=$$pool" \
+				"UserPoolClientId=$$client" \
+				"AllowedOrigins=$$origins" \
+				"AlertEmail=$(REPORT_EMAIL)"
+	@echo "Parser URL: $$($(call stack-output,$(AI_STACK),ParserUrl) | tr -d '[:space:]')"
+
+parser-logs: ## Show the last hour of the agenda parser's log
+	@$(AWS) logs tail "$$($(call stack-output,$(AI_STACK),LogGroupName) | tr -d '[:space:]')" \
+		--since 1h --format short
+
 # Calls the builder directly, as the schedule does, but for a chosen week.
 # WEEK is optional: without it the builder takes the previous ISO week.
 report-invoke: ## Build a report now by invoking the builder directly: make report-invoke WEEK=2026-W40
@@ -510,8 +604,8 @@ aws-frontend-url: ## Print the deployed site URL
 
 aws-destroy: ## Delete every stack, including the database and its data
 	$(require-aws-credentials)
-	@printf 'Delete %s, %s, %s, %s, %s and %s? The Aurora cluster, every user account and every report go with them (no snapshot). Type yes: ' \
-		"$(REPORTS_STACK)" "$(AUTH_STACK)" "$(GITHUB_STACK)" "$(FRONTEND_STACK)" "$(APP_STACK)" "$(ECR_STACK)"; \
+	@printf 'Delete %s, %s, %s, %s, %s, %s and %s? The Aurora cluster, every user account and every report go with them (no snapshot). Type yes: ' \
+		"$(AI_STACK)" "$(REPORTS_STACK)" "$(AUTH_STACK)" "$(GITHUB_STACK)" "$(FRONTEND_STACK)" "$(APP_STACK)" "$(ECR_STACK)"; \
 		read answer; test "$$answer" = "yes" || { echo "Aborted."; exit 1; }
 	@bucket=$$($(call stack-output,$(FRONTEND_STACK),BucketName) 2>/dev/null | tr -d '[:space:]'); \
 		if [ -n "$$bucket" ] && [ "$$bucket" != "None" ]; then \
@@ -523,6 +617,8 @@ aws-destroy: ## Delete every stack, including the database and its data
 			echo "Emptying s3://$$reports"; \
 			$(AWS) s3 rm "s3://$$reports" --recursive --only-show-errors || true; \
 		fi
+	-$(AWS) cloudformation delete-stack --stack-name $(AI_STACK)
+	-$(AWS) cloudformation wait stack-delete-complete --stack-name $(AI_STACK)
 	-$(AWS) cloudformation delete-stack --stack-name $(REPORTS_STACK)
 	-$(AWS) cloudformation wait stack-delete-complete --stack-name $(REPORTS_STACK)
 	-$(AWS) cloudformation delete-stack --stack-name $(AUTH_STACK)

@@ -6,6 +6,7 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
+from app.services.agenda import AgendaService
 from app.services.meeting import MeetingService
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
@@ -16,3 +17,10 @@ def get_meeting_service(session: SessionDep) -> MeetingService:
 
 
 MeetingServiceDep = Annotated[MeetingService, Depends(get_meeting_service)]
+
+
+def get_agenda_service(session: SessionDep) -> AgendaService:
+    return AgendaService(session)
+
+
+AgendaServiceDep = Annotated[AgendaService, Depends(get_agenda_service)]

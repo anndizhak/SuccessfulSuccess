@@ -13,6 +13,11 @@ dependencies = [
     "pydantic-settings>=2.3.0",
     "email-validator>=2.1.0",
     "mangum>=0.19.0",
+    # Claude on Amazon Bedrock (the Messages API on bedrock-mantle); brings boto3
+    # for the Converse API too.
+    "anthropic[bedrock]>=1.17.0",
+    # Verifies Cognito's signed access tokens against the pool's public keys.
+    "PyJWT[crypto]>=2.15.1",
 ]
 
 [dependency-groups]

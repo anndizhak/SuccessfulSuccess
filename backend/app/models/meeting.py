@@ -13,6 +13,7 @@ from sqlalchemy import (
     Text,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -40,6 +41,10 @@ class Meeting(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+    # What an LLM suggested for the agenda last saved, with the model and the
+    # prompt version, next to what the person saved: the difference between
+    # the two is the parser's quality signal.
+    agenda_ai_suggestion: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     participants: Mapped[list["Participant"]] = relationship(
         back_populates="meeting",

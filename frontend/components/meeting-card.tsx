@@ -2,6 +2,7 @@
 
 import { MapPin, Users } from "lucide-react"
 
+import { AgendaDialog } from "@/components/agenda-dialog"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import {
   Card,
@@ -108,6 +109,9 @@ export function MeetingCard({
             </TooltipContent>
           </Tooltip>
         )}
+        <div className="mt-4">
+          <AgendaDialog meeting={meeting} />
+        </div>
       </CardContent>
     </Card>
   )
