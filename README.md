@@ -47,8 +47,11 @@ make help        # everything else
 
 ## Deploy to AWS
 
-`infra/` holds three CloudFormation templates: `ecr.yml` (image registry),
-`backend.yml` (API and database) and `frontend.yml` (site). `make` reads `.env`,
+`infra/` holds two kinds of infrastructure code. CloudFormation templates for the
+base: `ecr.yml` (image registry), `backend.yml` (API and database),
+`frontend.yml` (site) and `github.yml` (the CI role). And Terraform (`*.tf`) for
+everything added since: Cognito sign-in, the weekly report and the agenda parser
+(see [Terraform](#5-cognito-reports-and-the-agenda-parser--terraform) below). `make` reads `.env`,
 so the `aws-*` targets pick up the credentials and settings from there; `.env` is
 gitignored, so real keys never reach the repository. The AWS CLI runs in the
 `amazon/aws-cli` container, so nothing has to be installed on the host besides
@@ -270,9 +273,50 @@ infrastructure changes stay a local, admin-run deploy.
   ACM certificates are free.
 - **ECR** — 500 MB in the free tier; the lifecycle policy keeps five images.
 
-`make aws-destroy` deletes everything, database included, with no snapshot left
+Destroy the Terraform-managed part first (a destroy run in HCP Terraform, after
+removing `prevent_destroy`). Then `make aws-destroy` deletes every stack, database included, with no snapshot left
 behind. Accounts opened after July 2025 get credits instead of the classic free
 tier — check your billing console rather than assuming.
+
+### 5. Cognito, reports and the agenda parser — Terraform
+
+These were CloudFormation stacks (`auth`, `reports`, `ai`) until Lab 7. They are
+now Terraform in `infra/`, with the state in HCP Terraform:
+
+| File | What it manages |
+|---|---|
+| `versions.tf` | the HCP Terraform workspace (`ooad-anndizhak/successfulsuccess-dev`), providers, the `PROJECT_NAME` default tag, and the backend stack read as a data source |
+| `auth.tf` | user pool, Google identity provider, web client, domain, managed login branding |
+| `reports.tf` | reports bucket and its settings, S3 gateway endpoint, builder and mailer, queue + DLQ, schedule, SES identity |
+| `ai.tf` | agenda parser, its function URL, the $5 budget alarm |
+| `variables.tf`, `terraform.tfvars` | inputs; only non-secret values are in the file |
+| `outputs.tf` | everything the Makefile and the frontend build read |
+
+**Who applies.** Nobody from a laptop. HCP Terraform is connected to this
+repository with `infra` as its working directory: every pull request gets a
+plan as a check, and a merge to `main` applies it. Runs reach AWS with
+short-lived credentials (OIDC, the `hcp-terraform-ooad-anndizhak` role), so no
+AWS key is stored in HCP Terraform.
+
+**Secrets.** `google_client_secret` and `db_password` are sensitive Terraform
+variables in the workspace, never in a file. They do end up in the Terraform
+state (HCP Terraform stores it encrypted) and, for the database password, in
+the builder's environment, as before.
+
+**Locally** (once: `terraform login`, then `make infra-init`):
+
+```bash
+make infra-plan     # what would change; runs in HCP Terraform, applies nothing
+make infra-output   # the user pool, queue URLs, parser URL, ...
+make infra-image    # push a new builder/parser image and print the URI for terraform.tfvars
+```
+
+`make deploy-frontend`, `report-now`, `report-logs` and the other targets read
+the Terraform outputs (`terraform -chdir=infra output -raw ...`) instead of
+stack outputs.
+
+**Safety.** The user pool and the reports bucket have `prevent_destroy`: a plan
+that would replace them fails instead of deleting the accounts or the reports.
 
 ### Known trade-offs
 
@@ -327,7 +371,7 @@ sent, so every client shows the same time as the day it was listed under.
 ```
 backend/    FastAPI app (api → services → repositories → models), Alembic, tests
 frontend/   Next.js app, shadcn/ui primitives in components/ui
-infra/      CloudFormation templates behind the aws-* targets
+infra/      CloudFormation (ecr, backend, frontend, github) and Terraform (auth, reports, ai)
 docker-compose.yml
 ```
 

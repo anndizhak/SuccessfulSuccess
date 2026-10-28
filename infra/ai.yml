@@ -60,6 +60,8 @@ Parameters:
 Resources:
   ParserRole:
     Type: AWS::IAM::Role
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
@@ -93,6 +95,8 @@ Resources:
 
   ParserLogGroup:
     Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       LogGroupName: !Sub "/aws/lambda/${ProjectName}-agenda-parser"
       RetentionInDays: 14
@@ -102,6 +106,8 @@ Resources:
 
   ParserFunction:
     Type: AWS::Lambda::Function
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       FunctionName: !Sub "${ProjectName}-agenda-parser"
       Description: Turns pasted text into a suggested agenda with Claude on Bedrock
@@ -140,6 +146,8 @@ Resources:
   # Cognito access token (401) before any model is called.
   ParserUrl:
     Type: AWS::Lambda::Url
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       TargetFunctionArn: !GetAtt ParserFunction.Arn
       AuthType: NONE
@@ -152,6 +160,8 @@ Resources:
 
   ParserUrlPermission:
     Type: AWS::Lambda::Permission
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       FunctionName: !Ref ParserFunction
       Action: lambda:InvokeFunctionUrl
@@ -160,6 +170,8 @@ Resources:
 
   ParserUrlInvokePermission:
     Type: AWS::Lambda::Permission
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       FunctionName: !Ref ParserFunction
       Action: lambda:InvokeFunction
@@ -173,6 +185,8 @@ Resources:
   # watches the whole account, not only the parser.
   MonthlyBudget:
     Type: AWS::Budgets::Budget
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       Budget:
         BudgetName: !Sub "${ProjectName}-monthly"
@@ -206,6 +220,9 @@ Resources:
           Value: !Ref ProjectName
 
 Outputs:
+  # Forces a stack update so the Retain policies are applied (Lab 7).
+  RetainedForTerraform:
+    Value: "true"
   ParserUrl:
     Description: The parser's endpoint (POST), without the trailing slash
     Value: !Sub ["https://${Host}", {Host: !Select [2, !Split ["/", !GetAtt ParserUrl.FunctionUrl]]}]

@@ -89,13 +89,13 @@ Resources:
   # that a circular dependency.
   ReportsBucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     # S3 checks that it may invoke the mailer when the notification is set, so
     # the permission comes first. It names the bucket by its constructed ARN.
     DependsOn: MailerInvokePermission
     # Reports are rebuilt from the database on demand; `make aws-destroy`
     # empties the bucket and deletes it with the stack.
-    DeletionPolicy: Delete
-    UpdateReplacePolicy: Delete
     Properties:
       BucketName: !Sub "${ProjectName}-reports-${AWS::AccountId}"
       PublicAccessBlockConfiguration:
@@ -140,6 +140,8 @@ Resources:
   # Plain HTTP requests to the bucket are refused.
   ReportsBucketPolicy:
     Type: AWS::S3::BucketPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       Bucket: !Ref ReportsBucket
       PolicyDocument:
@@ -161,6 +163,8 @@ Resources:
   # gateway endpoint is free: it only adds a route to S3's address ranges.
   S3GatewayEndpoint:
     Type: AWS::EC2::VPCEndpoint
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       VpcEndpointType: Gateway
       ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
@@ -176,6 +180,8 @@ Resources:
 
   BuilderRole:
     Type: AWS::IAM::Role
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
@@ -214,6 +220,8 @@ Resources:
 
   BuilderLogGroup:
     Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       LogGroupName: !Sub "/aws/lambda/${ProjectName}-report-builder"
       RetentionInDays: 14
@@ -223,6 +231,8 @@ Resources:
 
   BuilderFunction:
     Type: AWS::Lambda::Function
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     # The route to S3 must exist before the first report is written.
     DependsOn: S3GatewayEndpoint
     Properties:
@@ -271,6 +281,8 @@ Resources:
   # to the same prefix calls itself forever.
   MailerRole:
     Type: AWS::IAM::Role
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
@@ -303,6 +315,8 @@ Resources:
 
   MailerLogGroup:
     Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       LogGroupName: !Sub "/aws/lambda/${ProjectName}-report-mailer"
       RetentionInDays: 14
@@ -312,6 +326,8 @@ Resources:
 
   MailerFunction:
     Type: AWS::Lambda::Function
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       FunctionName: !Sub "${ProjectName}-report-mailer"
       Description: Emails each new weekly report through SES
@@ -400,6 +416,8 @@ Resources:
   # the bucket (needs the permission) and the permission (needs the bucket).
   MailerInvokePermission:
     Type: AWS::Lambda::Permission
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       FunctionName: !GetAtt MailerFunction.Arn
       Action: lambda:InvokeFunction
@@ -414,6 +432,8 @@ Resources:
   # DKIM: that needs DNS records for a domain.
   ReportEmailIdentity:
     Type: AWS::SES::EmailIdentity
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       EmailIdentity: !Ref ReportEmail
 
@@ -423,6 +443,8 @@ Resources:
   # inspect it, fix the cause, then "Start DLQ redrive" in the SQS console.
   RequestDeadLetterQueue:
     Type: AWS::SQS::Queue
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       QueueName: !Sub "${ProjectName}-report-requests-dlq"
       MessageRetentionPeriod: 1209600   # 14 days, the maximum
@@ -435,6 +457,8 @@ Resources:
   # all send the same message, and the builder does not care who asked.
   RequestQueue:
     Type: AWS::SQS::Queue
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       QueueName: !Sub "${ProjectName}-report-requests"
       # At least 6× the builder's timeout (120 s): a message must not become
@@ -452,6 +476,8 @@ Resources:
 
   RequestQueueToBuilder:
     Type: AWS::Lambda::EventSourceMapping
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       EventSourceArn: !GetAtt RequestQueue.Arn
       FunctionName: !Ref BuilderFunction
@@ -468,6 +494,8 @@ Resources:
 
   SchedulerRole:
     Type: AWS::IAM::Role
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
@@ -495,6 +523,8 @@ Resources:
   # project instead.
   WeeklySchedule:
     Type: AWS::Scheduler::Schedule
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       Name: !Sub "${ProjectName}-weekly-report"
       Description: Builds last week's meetings report every Monday morning
@@ -514,6 +544,9 @@ Resources:
         Input: '{"week": null, "source": "schedule"}'
 
 Outputs:
+  # Forces a stack update so the Retain policies are applied (Lab 7).
+  RetainedForTerraform:
+    Value: "true"
   BucketName:
     Value: !Ref ReportsBucket
   S3EndpointId:
