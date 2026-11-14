@@ -70,3 +70,11 @@ Docker images `meetings-api:gcp-test`, `meetings-lambda:test` and
 `…/meetings-api:gcp-*` on the laptop (`docker image rm`); `gcp/hosting/public/`
 (git-ignored build output); `gcloud auth configure-docker` added a credential
 helper for `us-central1-docker.pkg.dev` to `~/.docker/config.json`.
+
+## Part 4 demos (console, by hand)
+
+| What | Name | Bills | How to remove |
+| --- | --- | --- | --- |
+| BigQuery query | over `bigquery-public-data.thelook_ecommerce` (~4.8 MB scanned); no table stored | free (1 TiB a month) | — |
+| Looker Studio report | the chart over that query (owned by the Google account, not the project) | free | Looker Studio → the report → Remove |
+| Document AI API + processor | Enterprise Document OCR `lab9-ocr`, region `us` (to be created in the console) | first 1,000 pages a month free | Document AI → Processors → `lab9-ocr` → Delete |
