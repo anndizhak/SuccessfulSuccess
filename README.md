@@ -345,8 +345,9 @@ that would replace them fails instead of deleting the accounts or the reports.
 
 The core of the app (site, API, database) also runs on Google Cloud, in the
 project `spry-anndizhak-2026` (us-central1). Why each piece is what it is:
-[ADR 0008](docs/adr/0008-gcp.md). Everything created there is listed in
-[`gcp/RESOURCES.md`](gcp/RESOURCES.md).
+[ADR 0008](docs/adr/0008-gcp.md). What it costs on each cloud for the four
+traffic profiles: [docs/cost-gcp.md](docs/cost-gcp.md). Everything created there
+is listed in [`gcp/RESOURCES.md`](gcp/RESOURCES.md).
 
 - Site: https://spry-anndizhak-2026.web.app (Firebase Hosting)
 - API: Cloud Run service `meetings-api`; the site reaches it as `/api/**` on its
