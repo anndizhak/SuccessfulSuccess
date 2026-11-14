@@ -75,6 +75,6 @@ helper for `us-central1-docker.pkg.dev` to `~/.docker/config.json`.
 
 | What | Name | Bills | How to remove |
 | --- | --- | --- | --- |
-| BigQuery query | over `bigquery-public-data.thelook_ecommerce` (~4.8 MB scanned); no table stored | free (1 TiB a month) | — |
+| BigQuery query | over `bigquery-public-data.thelook_ecommerce` (4.56 MB processed, 10 MB billed); no table stored | free (1 TiB a month) | — |
 | Looker Studio report | the chart over that query (owned by the Google account, not the project) | free | Looker Studio → the report → Remove |
-| Document AI API + processor | Enterprise Document OCR `lab9-ocr`, region `us` (to be created in the console) | first 1,000 pages a month free | Document AI → Processors → `lab9-ocr` → Delete |
+| Document AI API + processor | Enterprise Document OCR `lab9-ocr`, region `us` (created in the console; one test document processed) | first 1,000 pages a month free | Document AI → Processors → `lab9-ocr` → Delete |
