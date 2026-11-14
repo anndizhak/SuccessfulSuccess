@@ -17,7 +17,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.12.21 /uv /usr/local/bin/uv
 # Into the system site-packages, not LAMBDA_TASK_ROOT: installing there would
 # merge the alembic package into the alembic/ migrations folder.
 COPY pyproject.toml ./
-RUN uv pip install --system --no-cache -r pyproject.toml
+RUN uv pip install --system --no-cache -r pyproject.toml --group lambda
 
 COPY alembic.ini ./
 COPY alembic ./alembic

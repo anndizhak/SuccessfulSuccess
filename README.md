@@ -8,6 +8,7 @@ participants) and add a new one from the UI. Built to `SPEC.md`.
 - **Frontend** — Next.js (App Router) + shadcn/ui, styled after Canva's visual language
 - **Backend** — FastAPI + SQLAlchemy 2 (async) + Alembic
 - **Database** — PostgreSQL 17
+- **Clouds** — AWS (everything) and Google Cloud (the core: site, API, database)
 
 ## Quick start
 
@@ -340,6 +341,103 @@ that would replace them fails instead of deleting the accounts or the reports.
   interfaces slowly, and the security groups wait for them.
 - One Aurora instance: there is no reader to fail over to.
 
+## Deploy to Google Cloud (Lab 9)
+
+The core of the app (site, API, database) also runs on Google Cloud, in the
+project `spry-anndizhak-2026` (us-central1). Why each piece is what it is:
+[ADR 0008](docs/adr/0008-gcp.md). Everything created there is listed in
+[`gcp/RESOURCES.md`](gcp/RESOURCES.md).
+
+- Site: https://spry-anndizhak-2026.web.app (Firebase Hosting)
+- API: Cloud Run service `meetings-api`; the site reaches it as `/api/**` on its
+  own origin (a Firebase rewrite), so there is no CORS
+- Database: Cloud SQL for PostgreSQL 17, `db-f1-micro`, 10 GB SSD
+
+```
+Browser ──> Firebase Hosting ──/api/**──> Cloud Run (meetings-api) ──socket──> Cloud SQL
+             static export                 runs as meetings-api@…            password from
+                                                                              Secret Manager
+```
+
+`gcp/` is its own Terraform root module with its own state (HCP workspace
+`ooad-anndizhak/successfulsuccess-gcp`), apart from `infra/`: one plan cannot
+change both clouds. It enables the APIs it uses, so a fresh project is
+reproducible.
+
+**No keys.** On the laptop everything runs as you: `gcloud auth login` (the CLI,
+Docker pushes) and `gcloud auth application-default login` (Terraform, the
+Firebase CLI). HCP Terraform runs log in as `terraform@…` through Workload
+Identity Federation, admitted only for the organization and workspace IDs.
+No service account key exists.
+
+### First time (once per project)
+
+Needs `gcloud`, Terraform, Docker and Node 22 (for the Firebase CLI through
+`npx`; `NODE_BIN` points at it).
+
+```bash
+gcloud auth login
+gcloud auth application-default login
+gcloud config set project spry-anndizhak-2026
+make gcp-bootstrap   # service accounts terraform + meetings-api, WIF, Firebase (local state)
+```
+
+Then put the bootstrap outputs on the workspace as environment variables:
+`TFC_GCP_PROVIDER_AUTH=true`, `TFC_GCP_RUN_SERVICE_ACCOUNT_EMAIL` and
+`TFC_GCP_WORKLOAD_PROVIDER_NAME` (none of them is a secret), and:
+
+```bash
+terraform login      # once per laptop
+make gcp-init
+make gcp-apply       # APIs, registry, Cloud SQL, the secret, Cloud Run (with Google's sample image)
+```
+
+### Every deploy
+
+```bash
+make gcp-deploy            # build linux/amd64, push to Artifact Registry, pin by digest, apply
+make gcp-deploy-frontend   # static export with an empty API base, firebase deploy
+make gcp-url
+```
+
+`gcp-deploy` stores the image (pinned by digest) as the workspace variable
+`api_image`, so later runs keep the release instead of going back to the
+sample image. The API runs the Alembic migrations when it starts and inserts the
+demo meetings for today when the table is empty: the data is the seed, not a
+copy of Aurora (which is private to its VPC).
+
+### Stopping the database
+
+Cloud SQL does not pause like Aurora. It bills ~$0.0105 an hour (~$7.67 a month)
+while it runs, and its disk (~$1.70 a month) all the time.
+
+```bash
+make gcp-db-stop     # activation policy NEVER: only the disk bills; the API answers 503
+make gcp-db-start    # ALWAYS: running again in a few minutes
+make gcp-db-status
+```
+
+Both go through Terraform (the workspace variable `db_activation_policy`), so the
+state does not drift. Cloud Run scales to zero on its own.
+
+### What still runs on AWS
+
+Everything in [Deploy to AWS](#deploy-to-aws) stays as it is: the full app at
+https://d327ma3w90nqqi.cloudfront.net with Cognito sign-in, the weekly report
+(Scheduler → SQS → builder → S3 → mailer → SES) and Paste an agenda (Bedrock).
+The GCP site is built without sign-in and without the parser; ADR 0008 says why.
+`backend/Dockerfile` is the image for compose and Cloud Run; `Dockerfile.lambda`
+adds Mangum (the dependency group `lambda`) for AWS.
+
+### Removing it
+
+The Cloud SQL instance and the Cloud Run service have deletion protection. To
+remove everything: set `deletion_protection = false` on both (and
+`deletion_protection_enabled = false` on the instance), apply, then
+`terraform -chdir=gcp destroy`, then `terraform -chdir=gcp/bootstrap destroy`,
+then delete the project. `gcp/RESOURCES.md` lists what is created outside
+Terraform.
+
 ## API
 
 Base path `/api/v1`. Full schema at `/docs`.
@@ -372,6 +470,7 @@ sent, so every client shows the same time as the day it was listed under.
 backend/    FastAPI app (api → services → repositories → models), Alembic, tests
 frontend/   Next.js app, shadcn/ui primitives in components/ui
 infra/      CloudFormation (ecr, backend, frontend, github) and Terraform (auth, reports, ai)
+gcp/        Terraform for Google Cloud (Lab 9); bootstrap/ for its identities, hosting/ for Firebase
 docker-compose.yml
 ```
 

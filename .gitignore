@@ -18,6 +18,11 @@ next-env.d.ts
 
 # Terraform
 infra/.terraform/
+gcp/.terraform/
+gcp/bootstrap/.terraform/
+# Firebase CLI cache and the site build it deploys
+.firebase/
+gcp/hosting/public/
 infra/.build/
 *.tfstate
 *.tfstate.*
