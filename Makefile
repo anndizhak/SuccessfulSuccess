@@ -487,3 +487,78 @@ aws-destroy: ## Delete every CloudFormation stack, including the database and it
 	$(AWS) cloudformation delete-stack --stack-name $(ECR_STACK)
 	$(AWS) cloudformation wait stack-delete-complete --stack-name $(ECR_STACK)
 	@echo "All stacks deleted."
+
+# --- Google Cloud (Lab 9) ------------------------------------------------------
+# The core (site, API, database) also runs on Google Cloud: gcp/*.tf with its
+# own HCP Terraform workspace (successfulsuccess-gcp), apart from infra/.
+# Credentials: your own `gcloud auth login` and `gcloud auth application-default
+# login` on the laptop; HCP Terraform runs use Workload Identity Federation.
+# No service account key exists. See docs/adr/0008-gcp.md.
+GCP_PROJECT ?= spry-anndizhak-2026
+GCP_REGION ?= us-central1
+GCP_REGISTRY = $(GCP_REGION)-docker.pkg.dev/$(GCP_PROJECT)/meetings
+GCP_IMAGE = $(GCP_REGISTRY)/meetings-api
+GCP_IMAGE_TAG ?= gcp-$(shell git rev-parse --short HEAD 2>/dev/null)$(shell test -z "$$(git status --porcelain 2>/dev/null)" || echo -dirty)
+TFG ?= terraform -chdir=gcp
+# Pass TFG_APPLY=-auto-approve to skip the confirmation.
+TFG_APPLY ?=
+# The Firebase CLI through npx, pinned. It logs in with your application
+# default credentials, like Terraform does on the laptop.
+NODE_BIN ?= /opt/homebrew/opt/node@22/bin
+FIREBASE ?= PATH="$(NODE_BIN):$$PATH" npx -y firebase-tools@15.34.2
+
+.PHONY: gcp-bootstrap gcp-init gcp-plan gcp-apply gcp-push gcp-deploy gcp-deploy-frontend \
+        gcp-url gcp-logs gcp-db-stop gcp-db-start gcp-db-status
+
+gcp-bootstrap: ## Create the GCP service accounts and WIF for HCP Terraform (once, from the laptop)
+	terraform -chdir=gcp/bootstrap init
+	terraform -chdir=gcp/bootstrap apply
+
+gcp-init: ## Connect gcp/ to the successfulsuccess-gcp workspace (once; needs terraform login)
+	$(TFG) init
+
+gcp-plan: ## Show what Terraform would change on Google Cloud (runs in HCP Terraform)
+	$(TFG) plan
+
+gcp-apply: ## Apply gcp/ with the release and database state stored in the workspace
+	$(TFG) apply $(TFG_APPLY)
+
+gcp-push: ## Build the API image (linux/amd64) and push it to Artifact Registry
+	gcloud auth configure-docker $(GCP_REGION)-docker.pkg.dev --quiet
+	docker build --platform linux/amd64 --provenance=false -t $(GCP_IMAGE):$(GCP_IMAGE_TAG) backend
+	docker push $(GCP_IMAGE):$(GCP_IMAGE_TAG)
+
+gcp-deploy: gcp-push ## Push the API image, record it in the workspace (pinned by digest), apply
+	@digest=$$(gcloud artifacts docker images describe $(GCP_IMAGE):$(GCP_IMAGE_TAG) \
+			--format 'value(image_summary.digest)' | tr -d '[:space:]'); \
+		test -n "$$digest" || { echo "No digest for $(GCP_IMAGE):$(GCP_IMAGE_TAG)"; exit 1; }; \
+		./gcp/tfvar.sh api_image "$(GCP_IMAGE)@$$digest"
+	$(TFG) apply $(TFG_APPLY)
+
+gcp-deploy-frontend: ## Build the static export (API on the same origin) and deploy it to Firebase Hosting
+	rm -rf gcp/hosting/public
+	# An empty API base: the site calls /api/v1/..., Firebase rewrites it to Cloud Run.
+	# Sign-in and the agenda parser stay on AWS, so the GCP site is built without them.
+	docker build --target export --output type=local,dest=gcp/hosting/public \
+		--build-arg NEXT_PUBLIC_API_BASE_URL= ./frontend
+	cd gcp/hosting && $(FIREBASE) deploy --only hosting --project $(GCP_PROJECT) --non-interactive
+
+gcp-url: ## Print the site and API URLs on Google Cloud
+	@$(TFG) output -raw site_url; echo
+	@$(TFG) output -raw api_url; echo
+
+gcp-logs: ## Show the API's last hour of logs on Cloud Run
+	gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="meetings-api"' \
+		--project $(GCP_PROJECT) --freshness 1h --order asc --format 'value(timestamp,textPayload)'
+
+gcp-db-stop: ## Stop Cloud SQL (only the 10 GB disk bills, ~$1.70/month; the API returns 503)
+	./gcp/tfvar.sh db_activation_policy NEVER
+	$(TFG) apply $(TFG_APPLY)
+
+gcp-db-start: ## Start Cloud SQL again (~$0.0105/hour while running)
+	./gcp/tfvar.sh db_activation_policy ALWAYS
+	$(TFG) apply $(TFG_APPLY)
+
+gcp-db-status: ## Show whether the Cloud SQL instance is running
+	gcloud sql instances describe meetings-pg --project $(GCP_PROJECT) \
+		--format 'table(name,state,settings.activationPolicy,settings.tier,settings.dataDiskSizeGb)'

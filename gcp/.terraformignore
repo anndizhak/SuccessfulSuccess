@@ -1,0 +1,8 @@
+# Only the root module goes to HCP Terraform: not the bootstrap (local state),
+# not the site build.
+bootstrap/
+hosting/
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
